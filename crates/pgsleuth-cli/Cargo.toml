@@ -1,0 +1,25 @@
+[package]
+name = "pgsleuth-cli"
+description = "pgsleuth command-line interface and agent runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "pgsleuth"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+pgsleuth-core = { path = "../pgsleuth-core" }
+pgsleuth-postgres = { path = "../pgsleuth-postgres" }
+pgsleuth-otel = { path = "../pgsleuth-otel" }
+tokio = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

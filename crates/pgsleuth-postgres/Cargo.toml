@@ -1,0 +1,19 @@
+[package]
+name = "pgsleuth-postgres"
+description = "Postgres collectors: pg_stat_statements, pg_stat_activity, pg_locks, etc."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+pgsleuth-core = { path = "../pgsleuth-core" }
+tokio = { workspace = true }
+tokio-postgres = { workspace = true }
+serde = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

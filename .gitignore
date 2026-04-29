@@ -1,0 +1,43 @@
+# Rust
+target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+build/
+dist/
+
+# Virtualenv lockfiles we don't track yet
+# (will revisit when we pick uv vs poetry)
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+.claude/
+
+# Local config / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Build artifacts
+*.log
+*.pid
