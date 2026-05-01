@@ -42,7 +42,7 @@ Calendar invites out by end of week 1.
 
 **Labels:** week-1, spike, technical
 
-Fill in `docs/research/ebpf-feasibility.md`. Goal: green/yellow/red verdict on `aya` for our use case. See the placeholder file for the structured questions.
+Execute the plan in [`docs/research/ebpf-poc.md`](docs/research/ebpf-poc.md) — two-Docker setup (`rust-dev` build container + `ebpf-feasibility` runtime container), step-gated. Fill in [`docs/research/ebpf-feasibility.md`](docs/research/ebpf-feasibility.md) with the green/yellow/red verdict at the end.
 
 ---
 
@@ -51,6 +51,14 @@ Fill in `docs/research/ebpf-feasibility.md`. Goal: green/yellow/red verdict on `
 **Labels:** week-1, spike, technical
 
 Fill in `docs/research/managed-pg-data.md`. Stand up RDS PG17 free tier, Cloud SQL trial. Document what's actually accessible.
+
+---
+
+### TASK: Spike — Cloud observability blueprints (1 day)
+
+**Labels:** week-1, spike, technical
+
+Fill in `docs/research/cloud-observability-blueprints.md`. Read the current GCP observability blueprint (newly released), AWS CloudWatch / Application Signals reference, and Azure Monitor / Application Insights reference end to end. Decide per cloud: (a) OTel suffices, (b) OTel + a thin attribute-mapping layer suffices, or (c) we need a first-class exporter. This unblocks open question #6 in `docs/design/000-architecture.md` and shapes the `pgsleuth-otel` crate scope before week 3.
 
 ---
 
