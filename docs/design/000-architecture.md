@@ -143,6 +143,8 @@ These are deliberately unresolved. Phase 0 spikes and the 5 DBA conversations sh
 
 5. **Rule schema and rule-engine architecture.** What's the data model for a rule? Pure data (YAML/JSON) or code? How are rules version-gated against Postgres versions? **→ Phase 1 question; design doc 001 will resolve this.**
 
+6. **Cloud observability blueprints — is OTel-only output enough?** [Google has just published Agent Observability + the agentic blueprint at Next '26](https://cloud.google.com/blog/topics/google-cloud-next/google-cloud-next-2026-wrap-up), AWS has [CloudWatch + Application Signals with native OTLP in preview](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-OpenTelemetry-Sections.html), and Azure has [Monitor + Application Insights with an opinionated OTel distro](https://learn.microsoft.com/en-us/azure/azure-monitor/app/opentelemetry). Our position is OTel-native and stop — but do these blueprints expect specific resource attributes, semantic conventions beyond the [OTel DB spec](https://opentelemetry.io/docs/specs/semconv/database/), log/trace correlation IDs, or first-party export shapes that pure OTLP doesn't cover by default? Risk: a regulated user on GCP/AWS/Azure adopts pgsleuth, then finds that their managed observability stack doesn't ingest our signal cleanly without an adapter we didn't build. **→ Week-1 research task; audit each cloud's current blueprint and decide: (a) OTel suffices, (b) OTel + a thin per-cloud attribute mapping suffices, or (c) we need first-class exporters per cloud. Document in [`docs/research/cloud-observability-blueprints.md`](../research/cloud-observability-blueprints.md).**
+
 ## How we'll know if this is the wrong architecture
 
 Concrete signals that would force a redesign:
