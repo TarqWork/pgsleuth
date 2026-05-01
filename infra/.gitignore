@@ -1,0 +1,11 @@
+envs/*
+!envs/.gitkeep
+!envs/*.example
+
+service-accounts/*
+!service-accounts/.gitkeep
+!service-accounts/*.example
+
+*.pem
+*.key
+*.p12
