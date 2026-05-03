@@ -1,0 +1,45 @@
+services:
+  rust-dev:
+    build:
+      context: ../../
+      dockerfile: infra/docker/rust-dev.Dockerfile
+    image: pgsleuth/rust-dev
+    container_name: pgsleuth-rust-dev
+    volumes:
+      - ../../../:/workspace/source        # Source code mount
+      - ./build.sh:/workspace/build.sh     # Build script
+      - ./ebpf-target:/workspace/build     # Local host directory mount
+    working_dir: /workspace/source/pgsleuth-ebpf-poc/
+    networks:
+      - pgsleuth-net
+    environment:
+      CARGO_TARGET_DIR: /workspace/build/target
+    command: ["bash", "/workspace/build.sh", "ebpf"]
+
+  ebpf-feasibility:
+    build:
+      context: ../../
+      dockerfile: infra/docker/ebpf-feasibility.Dockerfile
+    image: pgsleuth/ebpf-feasibility
+    container_name: pgsleuth-ebpf-feasibility
+    volumes:
+      - ./ebpf-target:/workspace/build     # Shared local host directory
+      - /sys/kernel/btf:/sys/kernel/btf:ro
+      - /sys/fs/bpf:/sys/fs/bpf
+    cap_add:
+      - BPF
+      - PERFMON
+      - NET_ADMIN
+      - SYS_ADMIN
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+    working_dir: /workspace/build
+    networks:
+      - pgsleuth-net
+    command: ["sh", "-c", "mount -t bpf bpf /sys/fs/bpf && ls -la target/bpfel-unknown-none/release/pgsleuth-ebpf && bpftool prog load target/bpfel-unknown-none/release/pgsleuth-ebpf /sys/fs/bpf/pgsleuth-ebpf && echo 'eBPF program loaded successfully' && sleep infinity"]
+
+networks:
+  pgsleuth-net:
+    driver: bridge
