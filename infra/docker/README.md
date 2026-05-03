@@ -85,7 +85,8 @@ docker compose -f pgsleuth/infra/docker/docker-compose.yml exec ebpf-feasibility
 - **Purpose:** Build eBPF programs with Rust
 - **Base:** rustlang/rust:nightly
 - **Tools:** cargo, clang, bpf-linker, libclang-dev
-- **Working dir:** /workspace (mounted from project root)
+- **Working dir:** /workspace/source/pgsleuth-ebpf-poc/ (source code)
+- **Build output:** /workspace/build/target/ (shared with ebpf-feasibility via `./ebpf-target` host mount)
 
 ### ebpf-feasibility
 - **Purpose:** Run eBPF programs with Postgres
@@ -104,9 +105,9 @@ The new setup automatically builds and loads the eBPF program:
    docker compose -f pgsleuth/infra/docker/docker-compose.yml up --build
    ```
 
-   - `rust-dev` automatically builds the eBPF program
+   - `rust-dev` automatically runs the build script (`bash /workspace/build.sh ebpf`)
    - `ebpf-feasibility` automatically loads and runs the eBPF program
-   - Artifacts shared via `bpf-builds` volume
+   - Artifacts shared via `./ebpf-target` host directory mount
 
 2. **Monitor the process:**
    ```bash
@@ -125,16 +126,20 @@ The new setup automatically builds and loads the eBPF program:
    docker compose -f pgsleuth/infra/docker/docker-compose.yml up --build -d
    ```
 
-2. **Access build container to compile eBPF programs:**
+2. **Access build container to run build commands:**
    ```bash
    docker compose -f pgsleuth/infra/docker/docker-compose.yml exec rust-dev bash
-   # Inside container: cargo build --release
+   # Inside container, run build script commands:
+   bash /workspace/build.sh ebpf    # build eBPF only
+   bash /workspace/build.sh all     # build everything
+   bash /workspace/build.sh clean   # clean artifacts
    ```
 
-3. **Access runtime container to run eBPF programs:**
+3. **Access runtime container to inspect/load eBPF programs:**
    ```bash
    docker compose -f pgsleuth/infra/docker/docker-compose.yml exec ebpf-feasibility bash
-   # Inside container: ./target/bpfel-unknown-none/release/your-program
+   # Inside container, inspect built artifacts:
+   ls -la target/bpfel-unknown-none/release/pgsleuth-ebpf
    ```
 
 4. **Stop when done:**
