@@ -7,6 +7,8 @@ RUN apt-get update && apt-get install -y \
     bpftool \
     libbpf-dev \
     linux-headers-generic \
+    procps \
+    vim \
     && rm -rf /var/lib/apt/lists/*
 
 # Create directories for eBPF operations

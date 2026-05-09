@@ -41,24 +41,24 @@ Two containers, both under `infra/docker/`:
 Each step: do it, verify the listed assertions, then proceed.
 
 ### Step 0 — Pre-flight
-- [ ] `uname -r` on the host. Record kernel version.
-- [ ] Inside a throwaway container, check `ls /sys/kernel/btf/vmlinux`. Present?
-- [ ] Confirm Docker Desktop's LinuxKit kernel exposes BTF. **If no → architecture rethink, do not proceed.**
+- [x] `uname -r` on the host. Record kernel version.
+- [x] Inside a throwaway container, check `ls /sys/kernel/btf/vmlinux`. Present?
+- [x] Confirm Docker Desktop's LinuxKit kernel exposes BTF. **If no → architecture rethink, do not proceed.**
 
 ### Step 1 — `rust-dev` container
-- [ ] Write `infra/docker/rust-dev.Dockerfile`.
-- [ ] `docker build -f infra/docker/rust-dev.Dockerfile -t pgsleuth/rust-dev .`
-- [ ] Inside: `cargo --version`, `bpf-linker --version`, `clang --version` all succeed.
+- [x] Write `infra/docker/rust-dev.Dockerfile`.
+- [x] `docker build -f infra/docker/rust-dev.Dockerfile -t pgsleuth/rust-dev .`
+- [x] Inside: `cargo --version`, `bpf-linker --version`, `clang --version` all succeed.
 
 ### Step 2 — `ebpf-feasibility` container (minimal, no Postgres)
-- [ ] Write `infra/docker/ebpf-feasibility.Dockerfile` against a Debian base.
-- [ ] Build it.
-- [ ] Inside, with `--cap-add=BPF --cap-add=PERFMON`: `bpftool feature probe` runs and reports a usable surface.
+- [x] Write `infra/docker/ebpf-feasibility.Dockerfile` against a Debian base.
+- [x] Build it.
+- [x] Inside, with `--cap-add=BPF --cap-add=PERFMON`: `bpftool feature probe` runs and reports a usable surface.
 
 ### Step 3 — Compose
-- [ ] Write `infra/docker/docker-compose.yml` wiring both services.
-- [ ] Shared named volume for build output.
-- [ ] `docker compose up rust-dev` → builds; `docker compose run ebpf-feasibility` → reads artifact.
+- [x] Write `infra/docker/docker-compose.yml` wiring both services.
+- [x] Shared named volume for build output.
+- [x] `docker compose up rust-dev` → builds; `docker compose run ebpf-feasibility` → reads artifact.
 
 ### Step 4 — Hello-world aya program
 - [x] New scratch crate in `pgsleuth-ebpf-poc/` directory.
@@ -84,8 +84,12 @@ Each step: do it, verify the listed assertions, then proceed.
 
 **Container Setup:**
 - **rust-dev**: Rust nightly + eBPF toolchain (clang, bpf-linker, rust-src)
-- **ebpf-feasibility**: Debian base + bpftool + libbpf-dev + BPF capabilities
-- **Capabilities Required**: `CAP_BPF + CAP_PERFMON + CAP_SYS_ADMIN`
+- **ebpf-feasibility**: `postgres:17-bookworm` base + bpftool + libbpf-dev + BPF capabilities
+
+**Capabilities required (observed):**
+- Easiest: **`CAP_SYS_ADMIN` alone** — implies the others, shortest `docker run` line, fine for local feasibility.
+- Principled (kernel ≥ 5.8): `CAP_BPF + CAP_PERFMON`, **plus** `CAP_SYS_ADMIN` for bpffs mount and some map ops, and likely `CAP_NET_ADMIN` once we touch network-side tracing.
+- Compose currently grants all four (`BPF, PERFMON, NET_ADMIN, SYS_ADMIN`). Tightening is a Phase 5 concern.
 
 **Files Modified/Created:**
 - `pgsleuth-ebpf-poc/pgsleuth-ebpf/src/main.rs` - eBPF kprobe implementation
@@ -93,14 +97,44 @@ Each step: do it, verify the listed assertions, then proceed.
 - `pgsleuth-ebpf-poc/pgsleuth-ebpf-common/src/lib.rs` - shared types (prepared for future use)
 - `pgsleuth/infra/docker/rust-dev.Dockerfile` - build environment
 - `pgsleuth/infra/docker/ebpf-feasibility.Dockerfile` - runtime environment
+- `pgsleuth/infra/docker/build.sh` - in-container build entry point
+- `pgsleuth/infra/docker/docker-compose.yml` - wires both services + shared `./ebpf-target` volume
 
-**Verification Commands:**
+**Verification (current build flow):**
+
+> **`up` vs `run` — pick one and stick with it.** `docker compose up` honors
+> the `container_name:` pinned in compose (`pgsleuth-ebpf-feasibility`), so
+> follow-up `docker exec` / `docker compose exec` commands work by name.
+> `docker compose run` creates a one-off container with an auto-generated
+> name like `docker-ebpf-feasibility-run-<hash>` and ignores `container_name`,
+> so `docker exec pgsleuth-ebpf-feasibility …` will fail with "No such
+> container". For verification, prefer `up -d`.
+
+From `pgsleuth/infra/docker/`:
 ```bash
-# Build eBPF program
-docker run --rm -v $(pwd):/workspace -w /workspace pgsleuth/rust-dev cargo run --bin xtask -- build-ebpf
+# build + start in background (uses the pinned container_name)
+docker compose up --build -d
 
-# Load and verify
-docker run --rm --cap-add=BPF --cap-add=PERFMON --cap-add=SYS_ADMIN -v $(pwd):/workspace -w /workspace pgsleuth/ebpf-feasibility sh -c "mount -t bpf bpf /sys/fs/bpf && bpftool prog load build/pgsleuth-ebpf /sys/fs/bpf/pgsleuth-ebpf && bpftool prog list | grep pgsleuth"
+# Inspect the loaded program
+docker exec pgsleuth-ebpf-feasibility bpftool prog list | grep pgsleuth
+# or, equivalent via compose:
+docker compose exec ebpf-feasibility bpftool prog list | grep pgsleuth
+
+# Tear down
+docker compose down
+```
+
+From project root (equivalent, no `cd` needed):
+```bash
+docker compose -f pgsleuth/infra/docker/docker-compose.yml up --build -d
+docker exec pgsleuth-ebpf-feasibility bpftool prog list | grep pgsleuth
+docker compose -f pgsleuth/infra/docker/docker-compose.yml down
+```
+
+If a container is already running but was started with `compose run`
+(ephemeral name), grab it by image instead:
+```bash
+docker exec $(docker ps -q --filter ancestor=pgsleuth/ebpf-feasibility) bpftool prog list | grep pgsleuth
 ```
 
 **Result**: `111: kprobe  name pgsleuth_ebpf  tag a04f5eef06a7f555`

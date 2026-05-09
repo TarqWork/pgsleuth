@@ -24,6 +24,8 @@ services:
     container_name: pgsleuth-ebpf-feasibility
     volumes:
       - ./ebpf-target:/workspace/build     # Shared local host directory
+      - ./setup-postgres.sh:/workspace/setup-postgres.sh
+      - ./load-ebpf.sh:/workspace/load-ebpf.sh
       - /sys/kernel/btf:/sys/kernel/btf:ro
       - /sys/fs/bpf:/sys/fs/bpf
     cap_add:
@@ -38,7 +40,7 @@ services:
     working_dir: /workspace/build
     networks:
       - pgsleuth-net
-    command: ["sh", "-c", "mount -t bpf bpf /sys/fs/bpf && ls -la target/bpfel-unknown-none/release/pgsleuth-ebpf && bpftool prog load target/bpfel-unknown-none/release/pgsleuth-ebpf /sys/fs/bpf/pgsleuth-ebpf && echo 'eBPF program loaded successfully' && sleep infinity"]
+    command: ["bash", "/workspace/setup-postgres.sh"]
 
 networks:
   pgsleuth-net:
