@@ -20,7 +20,8 @@ services:
     build:
       context: ../../
       dockerfile: infra/docker/ebpf-feasibility.Dockerfile
-    image: pgsleuth/ebpf-feasibility
+      target: ${EBPF_TARGET:-prod}
+    image: pgsleuth/ebpf-feasibility:${EBPF_TARGET:-prod}
     container_name: pgsleuth-ebpf-feasibility
     volumes:
       - ./ebpf-target:/workspace/build     # Shared local host directory

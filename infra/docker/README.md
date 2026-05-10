@@ -25,6 +25,13 @@ docker compose -f pgsleuth/infra/docker/docker-compose.yml up --build -d && dock
 
 This builds everything, starts containers in detached mode, and drops you into the eBPF runtime container shell.
 
+**Build with the dev image variant (adds build tools + debug utilities):**
+```bash
+EBPF_TARGET=dev docker compose -f pgsleuth/infra/docker/docker-compose.yml up --build -d
+```
+
+See [Image Variants](#image-variants) for what `prod` vs `dev` includes.
+
 **Start only rust-dev container:**
 ```bash
 docker compose -f pgsleuth/infra/docker/docker-compose.yml up rust-dev -d
@@ -33,6 +40,37 @@ docker compose -f pgsleuth/infra/docker/docker-compose.yml up rust-dev -d
 **Start only rust-dev and get shell:**
 ```bash
 docker compose -f pgsleuth/infra/docker/docker-compose.yml up rust-dev -d && docker compose -f pgsleuth/infra/docker/docker-compose.yml exec rust-dev bash
+```
+
+## Image Variants
+
+The `ebpf-feasibility` image is a multi-stage build with two targets, selected
+via the `EBPF_TARGET` environment variable (default: `prod`).
+
+| Variant | Selected by | Contents |
+| --- | --- | --- |
+| `prod` (default) | `EBPF_TARGET=prod` or unset | Runtime only: `bpftool`, `procps` on top of `postgres:17-bookworm`. Closer to a production-like image. |
+| `dev` | `EBPF_TARGET=dev` | Everything in `prod`, plus build/debug tooling: `libbpf-dev`, `linux-headers-generic`, `vim`. Use when iterating on eBPF programs inside the runtime container. |
+
+The variable controls both the Dockerfile build target and the resulting image
+tag (`pgsleuth/ebpf-feasibility:prod` vs `:dev`), so the two images coexist on
+disk without overwriting each other.
+
+**Examples:**
+```bash
+# Default (prod) — same as omitting the variable
+docker compose -f pgsleuth/infra/docker/docker-compose.yml up --build -d
+
+# Dev variant
+EBPF_TARGET=dev docker compose -f pgsleuth/infra/docker/docker-compose.yml up --build -d
+
+# Build only (no run)
+EBPF_TARGET=dev docker compose -f pgsleuth/infra/docker/docker-compose.yml build ebpf-feasibility
+```
+
+To make the variant sticky for a shell session:
+```bash
+export EBPF_TARGET=dev
 ```
 
 ## Common Commands
@@ -91,6 +129,7 @@ docker compose -f pgsleuth/infra/docker/docker-compose.yml exec ebpf-feasibility
 ### ebpf-feasibility
 - **Purpose:** Run eBPF programs with Postgres
 - **Base:** postgres:17-bookworm
+- **Build:** Multi-stage Dockerfile with two targets — `prod` (runtime-only) and `dev` (adds `libbpf-dev`, `linux-headers-generic`, `vim`). Selected via the `EBPF_TARGET` env var; see [Image Variants](#image-variants).
 - **Capabilities:** BPF, PERFMON (for eBPF operations)
 - **Mounts:** /sys/kernel/btf, /sys/fs/bpf (for kernel BTF/BPF access)
 
