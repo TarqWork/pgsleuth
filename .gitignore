@@ -41,3 +41,6 @@ Thumbs.db
 # Build artifacts
 *.log
 *.pid
+
+# Local research notes (kept on disk, not tracked)
+docs/research/loaded_kernal_function.md
