@@ -1,5 +1,6 @@
 #!/bin/bash
 # Load eBPF program from build target directory
+# Updated to use name-based filtering instead of PID
 
 echo "Setting up eBPF filesystem..."
 mount -t bpf bpf /sys/fs/bpf
@@ -13,32 +14,63 @@ if [ ! -f "target/bpfel-unknown-none/release/pgsleuth-ebpf" ]; then
     exit 1
 fi
 
-echo "Extracting Postgres PID..."
-# Get Postgres backend PID from pg_stat_activity
-POSTGRES_PID=$(psql -U postgres -d postgres -t -c "SELECT pid FROM pg_stat_activity WHERE state = 'active' LIMIT 1;" | tr -d ' ')
+# Configuration: Process name to monitor
+TARGET_NAME=${1:-postgres}
+
+echo "Searching for Postgres process..."
+# Get Postgres PID
+POSTGRES_PID=$(pgrep -x postgres | head -1)
 
 if [ -z "$POSTGRES_PID" ]; then
-    echo "WARNING: No active Postgres backend found, using Postgres main process PID"
-    POSTGRES_PID=$(pgrep -x postgres | head -1)
+    # Try psql as fallback to find the backend pid
+    POSTGRES_PID=$(psql -U postgres -d postgres -t -c "SELECT pid FROM pg_stat_activity WHERE state = 'active' LIMIT 1;" | tr -d ' ' 2>/dev/null)
 fi
 
-if [ -z "$POSTGRES_PID" ]; then
-    echo "ERROR: Could not find Postgres PID"
-    exit 1
+FILTER_ARGS=""
+if [ -n "$POSTGRES_PID" ]; then
+    echo "Found Postgres PID: $POSTGRES_PID"
+    
+    # Try to get cgroup ID (v2)
+    # The path in /proc/PID/cgroup for v2 starts with 0::
+    CGROUP_PATH=$(grep '^0::' /proc/$POSTGRES_PID/cgroup | cut -d: -f3)
+    if [ -n "$CGROUP_PATH" ]; then
+        FULL_CGROUP_PATH="/sys/fs/cgroup$CGROUP_PATH"
+        if [ -d "$FULL_CGROUP_PATH" ]; then
+            POSTGRES_CGID=$(stat -c %i "$FULL_CGROUP_PATH")
+            echo "Found Postgres cgroup ID: $POSTGRES_CGID (Path: $CGROUP_PATH)"
+            FILTER_ARGS="--cgroup-id $POSTGRES_CGID"
+        fi
+    fi
+    
+    if [ -z "$FILTER_ARGS" ]; then
+        echo "Cgroup ID not found, falling back to PID: $POSTGRES_PID"
+        FILTER_ARGS="--pid $POSTGRES_PID"
+    fi
+else
+    echo "Postgres process not found, falling back to name-based filtering: $TARGET_NAME"
+    FILTER_ARGS="--name $TARGET_NAME"
 fi
 
-echo "Found Postgres PID: $POSTGRES_PID"
+echo "Starting eBPF loader with filter: $FILTER_ARGS"
+EBPF_LOG=/tmp/ebpf-loader.log
+RUST_LOG=info ./target/release/pgsleuth-ebpf-loader \
+    --bpf-object target/bpfel-unknown-none/release/pgsleuth-ebpf \
+    $FILTER_ARGS > $EBPF_LOG 2>&1 &
 
-echo "Starting eBPF loader with Postgres PID: $POSTGRES_PID"
-# Use eBPF loader instead of bpftool to avoid legacy map definition issues
-./target/release/pgsleuth-ebpf-loader --bpf-object target/bpfel-unknown-none/release/pgsleuth-ebpf --pid $POSTGRES_PID &
+LOADER_PID=$!
+sleep 1
 
-if [ $? -eq 0 ]; then
-    echo "eBPF loader started successfully"
-    echo "Monitoring Postgres PID: $POSTGRES_PID"
+if kill -0 $LOADER_PID 2>/dev/null; then
+    echo "eBPF loader started successfully (PID: $LOADER_PID)"
+    echo "--- Loader logs ---"
+    cat $EBPF_LOG
+    echo "--- end loader logs ---"
 else
     echo "ERROR: Failed to start eBPF loader"
+    cat $EBPF_LOG
     exit 1
 fi
 
 echo "eBPF loading complete. Container ready for testing."
+echo "Streaming loader logs (Ctrl+C to stop tailing, loader continues)..."
+tail -f $EBPF_LOG
