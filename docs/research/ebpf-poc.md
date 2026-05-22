@@ -1,8 +1,84 @@
 # eBPF POC — first iteration
 
-**Status:** TODO — plan only. Execution gated step-by-step.
+**Status (2026-05-22):** Steps 0–5 done. Step 6 partially done (PID/cgroup/name filtering on `vfs_open`, not `pread64` yet). Scaffolding for the v0 skeleton — including the Postgres extension and Docker integration — landed this session; full data-path validation still pending. See [Current status](#current-status-2026-05-22) below.
 
 Companion to [`ebpf-feasibility.md`](ebpf-feasibility.md). That doc holds the *verdict*. This doc holds the *plan*.
+
+## Current status (2026-05-22)
+
+This section supersedes the step-by-step checklist for live status. The original task list below is preserved as the historical plan.
+
+### What's working end-to-end
+
+- **eBPF program** loads in `ebpf-feasibility` container, attaches to `vfs_open`, filters by cgroup ID / PID / `comm`, emits matched events through a `RingBuf` to userspace.
+- **Userspace loader** (`pgsleuth-ebpf-loader`) consumes the ring buffer, supports `--cgroup-id` / `--pid` / `--name` flags. `load-ebpf.sh` resolves Postgres' cgroup ID from `/proc/<pid>/cgroup` (v2) and passes it as the primary filter.
+- **Postgres extension** (`pgsleuth-pg-ext`, pgrx 0.12.9) defines two SQL functions — `pgsleuth_wal_device()` and `pgsleuth_postmaster_pid()` — packaged via `cargo pgrx package` and installed into the runtime container by `install-pg-ext.sh` at boot.
+- **Docker integration** — `rust-dev` carries the pgrx toolchain (cargo-pgrx pinned to 0.12.9, `postgresql-server-dev-17` from apt.postgresql.org, `cargo pgrx init` against system pg_config so no managed PG is downloaded). `build.sh all` builds eBPF + loader + common + pg-ext in one shot.
+
+### What's NOT validated yet
+
+- **Loader ↔ PG extension wiring** — the loader does not yet call the extension at startup. Both pieces exist; they don't talk.
+- **SQL function correctness** — `pgsleuth_wal_device()` output not yet checked against an independent source (e.g., `stat -c '%d' $PGDATA/pg_wal`).
+- **Kernel-side device filtering** — the eBPF program filters by PID/cgroup/name, not by `dev_t`. Once the loader retrieves `pgsleuth_wal_device()`, the kernel program needs a `dev_t` filter to scope block I/O to the WAL device.
+- **OTel emission** — loader logs events; does not yet emit OTel histograms.
+
+### Immediate next steps
+
+**Next-1: Loader retrieves something from the PG extension.**
+
+Smallest possible end-to-end proof that the integration is real:
+- Add `tokio-postgres` to `pgsleuth-ebpf-loader`.
+- New `--pg-conn` arg (default `postgres://postgres@localhost/postgres`).
+- At startup, the loader connects and runs `SELECT pgsleuth_wal_device(), pgsleuth_postmaster_pid();`.
+- Log the results. Use the postmaster PID as the default for PID/cgroup filtering when `--pid` / `--cgroup-id` are not explicitly passed (keeping current flags as overrides).
+- Validates: pg-ext SQL surface, loader's ability to talk to PG, and the full stack from kernel → ring buffer → loader → SQL → log.
+
+**Next-2: Promote the scratch POC into the main application directory structure.**
+
+`pgsleuth-ebpf-poc/` is currently a sibling repo named "POC" — fine for feasibility, wrong for the product. Move the surviving crates into the main `pgsleuth/` tree under a coherent layout (something like `pgsleuth/crates/{ebpf,ebpf-common,loader,pg-ext}/` plus `pgsleuth/brain/` for the deferred Python brain). The exact layout is its own design decision and should be planned, not bolted on. Reference `pgsleuth/CLAUDE.md` (architecture invariants) and `pgsleuth/docs/design/000-architecture.md` before deciding.
+
+After the move, retire `pgsleuth-ebpf-poc` from active development (keep the git history but archive the repo).
+
+### Session summary — 2026-05-21 → 2026-05-22
+
+Major deliverables of this session:
+
+| Deliverable | Outcome |
+|---|---|
+| 19-alarm observability catalog with tiered eBPF-vs-DB detection model | `pgsleuth/docs/research/Database Observability Alarms.md` (committed) |
+| GitHub project board populated with all alarms as backlog items + scaffold item marked Done | https://github.com/orgs/TarqWork/projects/2 |
+| `pgsleuth-pg-ext` pgrx extension crate scaffolded with `pgsleuth_wal_device()` + `pgsleuth_postmaster_pid()` | `pgsleuth-ebpf-poc/pgsleuth-pg-ext/` |
+| Docker `rust-dev` upgraded with pgrx toolchain (cargo-pgrx 0.12.9, PG 17 headers, `cargo pgrx init`) | `pgsleuth/infra/docker/rust-dev.Dockerfile` |
+| `build.sh` extended with `pg-ext` / `pg-ext-test` targets, `--backtrace` / `--full` flags, `--out-dir $CARGO_TARGET_DIR/pg-ext-pkg` | `pgsleuth/infra/docker/build.sh` |
+| Idempotent install helper, sourced by both `setup-postgres.sh` (boot-time) and `load-ebpf.sh` (manual rerun) | `pgsleuth/infra/docker/install-pg-ext.sh` |
+
+### Where to look — design decisions, code, and rationale
+
+| Topic | Where it lives |
+|---|---|
+| 19 multi-signal alarms, per-alarm eBPF program type + attach point + DBA/SysAdmin/Linux-dev/Architect perspectives | `pgsleuth/docs/research/Database Observability Alarms.md` |
+| Tier-1→Tier-4 prioritization with detection-model column | same doc § "Implementation Priority" |
+| Why Alarm #3 (Fsync Jitter) was chosen as the v0 skeleton — pipeline-development grounds, not alarm-detection grounds | same doc § "Skeleton POC" |
+| Pure-DB alarms (#7 TXID, #8 THP, #17 Logical Decoding, #19 Idle-in-Tx) and why eBPF was dropped from each | same doc, per-alarm "Detection model" blocks |
+| `postgresql-server-dev-17` is headers-only (~30–50 MB), NOT the PG server | `pgsleuth-ebpf-poc/pgsleuth-pg-ext/README.md` § "Note on postgresql-server-dev-17" |
+| pgrx and cargo-pgrx are version-locked at 0.12.9 — bump both together | `pgsleuth-ebpf-poc/pgsleuth-pg-ext/Cargo.toml` (pin comment) + `pgsleuth/infra/docker/rust-dev.Dockerfile` |
+| Why `cargo pgrx init --pg17 $(which pg_config)` is in the Dockerfile (PGRX_HOME requirement; does NOT download managed PG) | `pgsleuth/infra/docker/rust-dev.Dockerfile` cargo-pgrx init layer comment |
+| Why `pgrx_embed_<crate-name>` companion bin target is mandatory for SQL-entity generation | `pgsleuth-ebpf-poc/pgsleuth-pg-ext/src/bin/pgrx_embed.rs` + matching `[[bin]]` in `Cargo.toml` |
+| Why `--out-dir` is anchored to `$CARGO_TARGET_DIR` (relative paths resolve from CWD, which is outside the shared mount in rust-dev) | `pgsleuth/infra/docker/build.sh` `build_pg_ext` function comment block |
+| The `PG_EXT_OUT_DIR` ↔ `PG_EXT_PKG` contract between build and install scripts | `pgsleuth/infra/docker/install-pg-ext.sh` `PG_EXT_PKG` comment block |
+| Idempotent install design (cp overwrites, `CREATE EXTENSION IF NOT EXISTS`, read-only smoke test) | `pgsleuth/infra/docker/install-pg-ext.sh` header |
+| Why install runs in BOTH `setup-postgres.sh` (boot) AND `load-ebpf.sh` (manual rerun) — covers both ordering cases | `pgsleuth/infra/docker/setup-postgres.sh` install hook comment |
+| Docker Desktop bind-mount staleness on atomic-write edits — `compose run` / `touch` / restart as fixes | This session's git log + the `[Skeleton] PG extension scaffold + Docker integration` project item |
+| `RUST_BACKTRACE` flag handling in build.sh | `pgsleuth/infra/docker/build.sh` top-of-file flag-parsing block |
+
+### Source commits — this session
+
+- `pgsleuth@8e87315` — docs(research): add observability alarms catalog and eBPF reference notes
+- `pgsleuth@d502c26` — feat(ebpf): cgroup/PID/name filter fallback chain in load-ebpf.sh
+- `pgsleuth@a786d9d` — chore(docs): untrack local kernel-function research dump
+- `pgsleuth@e7188af` — feat(docker): wire pgsleuth pg-ext build + install into the docker flow
+- `pgsleuth-ebpf-poc@42d0c5a` — feat(ebpf): filter by cgroup/PID/name and emit events via ring buffer
+- `pgsleuth-ebpf-poc@1669d6c` — feat(pg-ext): scaffold pgsleuth-pg-ext pgrx extension
 
 ## Goal
 
@@ -142,19 +218,20 @@ docker exec $(docker ps -q --filter ancestor=pgsleuth/ebpf-feasibility) bpftool 
 **Next Steps Ready**: Infrastructure proven working, ready for Step 5 Postgres integration.
 
 ### Step 5 — Postgres in the test container
-- [ ] Switch `ebpf-feasibility.Dockerfile` to `postgres:17-bookworm` base, re-layer eBPF tooling.
-- [ ] Boot Postgres, `psql` from compose service, run a heavy query.
-- [ ] Capture backend PID via `pg_stat_activity`.
+- [x] Switch `ebpf-feasibility.Dockerfile` to `postgres:17-bookworm` base, re-layer eBPF tooling.
+- [x] Boot Postgres, `psql` from compose service, run a heavy query.
+- [x] Capture backend PID via `pg_stat_activity`. (Plus cgroup ID via `/proc/<pid>/cgroup`.)
 
 ### Step 6 — Trace `pread64` from a specific Postgres backend
-- [ ] Filter the aya program by PID.
+*Partially superseded — we now attach to `vfs_open` and filter by PID / cgroup-ID / `comm`. `pread64` per-backend is still on the table but no longer the next milestone; see [Immediate next steps](#immediate-next-steps).*
+- [x] Filter the aya program by PID. (Plus cgroup ID and process name.)
 - [ ] Aggregate by file descriptor.
-- [ ] Resolve fd → relfilenode → table (best effort; record gaps).
-- [ ] Decide: is the signal interesting (latency distribution, table-attribution accuracy)?
+- [ ] Resolve fd → relfilenode → table — re-scoped: deferred until Alarm #1 (Plan Regression) becomes active; the v0 skeleton (Alarm #3, Fsync Jitter) needs `dev_t`-based filtering instead.
+- [x] Decide: is the signal interesting? **Yes** — proceeded to design the 19-alarm catalog and v0 skeleton (see `Database Observability Alarms.md`).
 
 ### Step 7 — Verdict
 - [ ] Fill in `ebpf-feasibility.md`: 🟢 / 🟡 / 🔴, kernel version, caps, surprises, what changes in the architecture.
-- [ ] Move scratch crate either into `crates/` properly or delete.
+- [ ] Move scratch crate either into `crates/` properly or delete. (See **Next-2** in [Immediate next steps](#immediate-next-steps).)
 
 ## Out of scope for the first POC
 
