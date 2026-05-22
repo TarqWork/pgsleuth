@@ -1,6 +1,7 @@
 #!/bin/bash
-# Load eBPF program from build target directory
-# Updated to use name-based filtering instead of PID
+# Load eBPF program from build target directory.
+# Also installs the pgsleuth Postgres extension (pgsleuth-pg-ext) when
+# its build artifacts are present in the shared target/ tree.
 
 echo "Setting up eBPF filesystem..."
 mount -t bpf bpf /sys/fs/bpf
@@ -13,6 +14,16 @@ if [ ! -f "target/bpfel-unknown-none/release/pgsleuth-ebpf" ]; then
     echo "Please ensure the rust-dev container has built the eBPF program successfully"
     exit 1
 fi
+
+# -----------------------------------------------------------------------------
+# Install the pgsleuth Postgres extension if its packaged artifacts exist.
+# Logic lives in the shared helper so setup-postgres.sh (boot-time) and
+# this script (manual invocation) use the same idempotent install path.
+# Failures are non-fatal — the eBPF loader still runs without the extension.
+# -----------------------------------------------------------------------------
+# shellcheck disable=SC1091
+source /workspace/install-pg-ext.sh
+install_pg_extension
 
 # Configuration: Process name to monitor
 TARGET_NAME=${1:-postgres}

@@ -15,6 +15,9 @@ services:
     environment:
       CARGO_TARGET_DIR: /workspace/build/target
     command: ["bash", "/workspace/build.sh", "ebpf"]
+    # tty: true
+    # stdin_open: true
+    # command: ["bash", "-c", "/workspace/build.sh ebpf && tail -f /dev/null"]
 
   ebpf-feasibility:
     build:
@@ -27,6 +30,7 @@ services:
       - ./ebpf-target:/workspace/build     # Shared local host directory
       - ./setup-postgres.sh:/workspace/setup-postgres.sh
       - ./load-ebpf.sh:/workspace/load-ebpf.sh
+      - ./install-pg-ext.sh:/workspace/install-pg-ext.sh
       - /sys/kernel/btf:/sys/kernel/btf:ro
       - /sys/fs/bpf:/sys/fs/bpf
     cap_add:
