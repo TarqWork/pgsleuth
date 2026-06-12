@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-cd /workspace/source/pgsleuth-ebpf-poc
+cd /workspace/source/pgsleuth
 
 # Resolve pg_config once (used by the pg-ext build). pgrx invokes it
 # during compilation and `cargo pgrx package` requires it explicitly.
@@ -50,12 +50,11 @@ build_pg_ext() {
   # them.
   #
   # IMPORTANT: --out-dir is resolved relative to the current working
-  # directory. rust-dev's CWD is /workspace/source/pgsleuth-ebpf-poc/
-  # (host project tree, NOT the shared mount), so a relative path here
-  # would land outside /workspace/build and be invisible to
-  # ebpf-feasibility. We anchor to $CARGO_TARGET_DIR (set to
-  # /workspace/build/target via docker-compose.yml) to keep the
-  # artifacts in the shared mount.
+  # directory. rust-dev's CWD is /workspace/source/pgsleuth/ (host
+  # project tree, NOT the shared mount), so a relative path here would
+  # land outside /workspace/build and be invisible to ebpf-feasibility.
+  # We anchor to $CARGO_TARGET_DIR (set to /workspace/build/target via
+  # docker-compose.yml) to keep the artifacts in the shared mount.
   #
   # install-pg-ext.sh's default PG_EXT_PKG="target/pg-ext-pkg" is the
   # matching relative path from ebpf-feasibility's CWD /workspace/build,

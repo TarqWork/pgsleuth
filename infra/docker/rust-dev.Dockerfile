@@ -38,7 +38,7 @@ RUN curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
     && rm -rf /var/lib/apt/lists/*
 
 # cargo-pgrx must match the `pgrx` dependency version pinned in
-# pgsleuth-ebpf-poc/pgsleuth-pg-ext/Cargo.toml. Bump both together.
+# pgsleuth/crates/pgsleuth-pg-ext/Cargo.toml. Bump both together.
 RUN cargo install --locked cargo-pgrx --version 0.12.9
 
 # Initialise $PGRX_HOME (~/.pgrx/) so pgrx can find its config file.

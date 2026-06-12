@@ -1,0 +1,19 @@
+[package]
+name = "pgsleuth-ebpf-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# Types shared between the kernel-side eBPF program and the
+# userspace loader. Must compile under `no_std` so the eBPF crate
+# can depend on it.
+
+[features]
+default = ["user"]
+user = ["dep:aya"]
+
+[dependencies]
+aya-ebpf-cty = "0.2"
+aya = { version = "0.13", default-features = false, optional = true }

@@ -123,7 +123,7 @@ docker compose -f pgsleuth/infra/docker/docker-compose.yml exec ebpf-feasibility
 - **Purpose:** Build eBPF programs with Rust
 - **Base:** rustlang/rust:nightly
 - **Tools:** cargo, clang, bpf-linker, libclang-dev
-- **Working dir:** /workspace/source/pgsleuth-ebpf-poc/ (source code)
+- **Working dir:** /workspace/source/pgsleuth/ (source code; eBPF crates live at `crates/pgsleuth-ebpf*`, `crates/pgsleuth-pg-ext`, `crates/xtask` after #19)
 - **Build output:** /workspace/build/target/ (shared with ebpf-feasibility via `./ebpf-target` host mount)
 
 ### ebpf-feasibility
