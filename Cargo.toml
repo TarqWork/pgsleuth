@@ -5,6 +5,29 @@ members = [
     "crates/pgsleuth-postgres",
     "crates/pgsleuth-otel",
     "crates/pgsleuth-cli",
+    # eBPF crates (promoted from pgsleuth-ebpf-poc in #19; see
+    # docs/design/002-poc-promotion.md).
+    "crates/pgsleuth-ebpf",
+    "crates/pgsleuth-ebpf-common",
+    "crates/pgsleuth-ebpf-loader",
+    "crates/pgsleuth-pg-ext",
+    "crates/xtask",
+]
+# Two members can't build on the macOS host — `pgsleuth-ebpf` needs the
+# `bpfel-unknown-none` target and `pgsleuth-pg-ext` needs pgrx +
+# postgresql-server-dev-17. Excluding them from `default-members` keeps
+# plain `cargo check` / `cargo build` from the workspace root usable on
+# the host. Build them explicitly inside the rust-dev container:
+#   cargo xtask build-ebpf            # kernel-side eBPF
+#   cargo pgrx package -p pgsleuth-pg-ext
+default-members = [
+    "crates/pgsleuth-core",
+    "crates/pgsleuth-postgres",
+    "crates/pgsleuth-otel",
+    "crates/pgsleuth-cli",
+    "crates/pgsleuth-ebpf-common",
+    "crates/pgsleuth-ebpf-loader",
+    "crates/xtask",
 ]
 
 [workspace.package]
@@ -53,3 +76,9 @@ clap = { version = "4", features = ["derive"] }
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+# `panic = "abort"` is required by the eBPF kernel crate
+# (bpfel-unknown-none has no unwinding infrastructure). Per-package
+# profile overrides cannot set `panic`, so it has to live here.
+# Side-effect: slightly smaller binaries for everyone, no exception
+# unwinding in release builds — pgsleuth-cli does not use catch_unwind.
+panic = "abort"

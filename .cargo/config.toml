@@ -1,0 +1,8 @@
+# Build aliases. The kernel-side and pgrx-extension aliases assume
+# execution inside the rust-dev container (see infra/docker/); running
+# them on the host is unsupported. Plain `cargo check` / `cargo build`
+# from the host still works against `default-members` in Cargo.toml.
+
+[alias]
+xtask = "run --package xtask --"
+build-ebpf = "build --package pgsleuth-ebpf --target bpfel-unknown-none -Z build-std=core --release"

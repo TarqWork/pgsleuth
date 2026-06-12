@@ -1,0 +1,10 @@
+# pgsleuth extension control file.
+# Auto-loaded by Postgres from $sharedir/extension/pgsleuth.control
+# when `CREATE EXTENSION pgsleuth;` is executed.
+
+comment = 'pgsleuth eBPF observability helper functions'
+default_version = '0.1.0'
+module_pathname = '$libdir/pgsleuth'
+relocatable = true
+superuser = false
+trusted = false

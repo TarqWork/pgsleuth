@@ -9,7 +9,7 @@ services:
       - ../../../:/workspace/source        # Source code mount
       - ./build.sh:/workspace/build.sh     # Build script
       - ./ebpf-target:/workspace/build     # Local host directory mount
-    working_dir: /workspace/source/pgsleuth-ebpf-poc/
+    working_dir: /workspace/source/pgsleuth/
     networks:
       - pgsleuth-net
     environment:

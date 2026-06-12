@@ -1,0 +1,25 @@
+[package]
+name = "pgsleuth-ebpf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# Kernel-side eBPF program. Built for the `bpfel-unknown-none`
+# target inside the rust-dev container; never compiled on the host.
+# See pgsleuth/docs/design/002-poc-promotion.md for layout history.
+#
+# Profile settings (panic = "abort", lto, opt-level) live on the
+# workspace `[profile.*]` blocks in the root Cargo.toml — Cargo ignores
+# `[profile.*]` in non-root workspace members.
+
+[[bin]]
+name = "pgsleuth-ebpf"
+path = "src/main.rs"
+
+[dependencies]
+aya-ebpf = "0.1"
+aya-log-ebpf = "0.1"
+
+pgsleuth-ebpf-common = { path = "../pgsleuth-ebpf-common", default-features = false }

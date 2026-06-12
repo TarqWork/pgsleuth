@@ -1,0 +1,39 @@
+[package]
+name = "pgsleuth-pg-ext"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# Built as a Postgres-loadable shared library. The `lib` name (`pgsleuth`)
+# determines the resulting filename (`pgsleuth.so`) which must match
+# `module_pathname` in pgsleuth.control.
+[lib]
+name = "pgsleuth"
+crate-type = ["cdylib", "rlib"]
+
+# Companion binary that pgrx's SQL-generation step requires.
+# The name MUST be `pgrx_embed_<crate-name>` (hyphens preserved) —
+# pgrx hardcodes that lookup. Its only job is to call the
+# `pgrx_embed!` macro from `src/bin/pgrx_embed.rs`.
+[[bin]]
+name = "pgrx_embed_pgsleuth-pg-ext"
+path = "src/bin/pgrx_embed.rs"
+
+[features]
+# Default to PG 17 — matches the version shipped in
+# pgsleuth/infra/docker/ebpf-feasibility.Dockerfile.
+default = ["pg17"]
+pg17 = ["pgrx/pg17"]
+pg_test = []
+
+[dependencies]
+# pgrx versions are tightly coupled to cargo-pgrx; if you change the version
+# here, change the matching `cargo install cargo-pgrx --version <X>` in the
+# build container. See README.md.
+pgrx = "=0.12.9"
+libc = "0.2"
+
+[dev-dependencies]
+pgrx-tests = "=0.12.9"

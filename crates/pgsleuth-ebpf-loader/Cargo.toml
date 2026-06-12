@@ -1,0 +1,26 @@
+[package]
+name = "pgsleuth-ebpf-loader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# Userspace loader. Loads the compiled BPF object, attaches probes,
+# and reads perf-event output. Runs inside the ebpf-feasibility
+# container with CAP_BPF + CAP_PERFMON.
+
+[[bin]]
+name = "pgsleuth-ebpf-loader"
+path = "src/main.rs"
+
+[dependencies]
+aya = "0.13"
+aya-log = "0.2"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+env_logger = "0.11"
+log = "0.4"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+
+pgsleuth-ebpf-common = { path = "../pgsleuth-ebpf-common" }
