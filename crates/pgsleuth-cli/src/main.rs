@@ -3,10 +3,27 @@
 
 //! pgsleuth — command-line interface and agent runtime.
 //!
-//! Pre-alpha: this binary currently does nothing useful. It exists so the
-//! workspace builds and CI is green from week 1.
+//! Today this binary hosts the polling rules. Subcommand layout:
+//!
+//! * `pgsleuth temp-spill` — runs Alarm 12b (capacity-side temp-file
+//!   spill, #47). Polls `$PGDATA/base/pgsql_tmp/` size and the mount's
+//!   free space; emits a Finding when either threshold trips.
+//! * `pgsleuth version` — prints version + build info.
+//!
+//! Future polling collectors (Tier 1) plug in as siblings of
+//! `temp-spill`.
 
+mod temp_spill;
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use pgsleuth_otel::{Emitter, EmitterConfig};
+
+use crate::temp_spill::TempSpillConfig;
 
 #[derive(Parser)]
 #[command(
@@ -23,9 +40,49 @@ struct Cli {
 enum Command {
     /// Print version and build info.
     Version,
+    /// Alarm 12b — Temp-File Spill capacity poller (#47).
+    TempSpill(TempSpillArgs),
 }
 
-fn main() {
+#[derive(Parser, Debug)]
+struct TempSpillArgs {
+    /// Path to `$PGDATA`. Required unless `--pg-conn` is set, in which
+    /// case the value is discovered via `SHOW data_directory`.
+    #[arg(long)]
+    pgdata: Option<PathBuf>,
+
+    /// Postgres libpq connection string used to discover `$PGDATA` via
+    /// `SHOW data_directory`. Ignored when `--pgdata` is passed.
+    #[arg(long)]
+    pg_conn: Option<String>,
+
+    /// Aggregate `pgsql_tmp/` footprint threshold in megabytes. Fires
+    /// when the directory's size exceeds this.
+    #[arg(long, default_value_t = 10_240)]
+    footprint_threshold_mb: u64,
+
+    /// Free-space threshold as a percentage of the mount. Fires when
+    /// available drops below. Set to 0 to disable the free-space check.
+    #[arg(long, default_value_t = 10)]
+    free_threshold_pct: u8,
+
+    /// Poll interval in milliseconds.
+    #[arg(long, default_value_t = 5_000)]
+    interval_ms: u64,
+
+    /// `OTLP`/gRPC endpoint for the Finding log emitter. Empty string
+    /// disables `OTel` emission entirely (Finding still logged via
+    /// `tracing` on `warn`).
+    #[arg(long, default_value = "")]
+    otlp_endpoint: String,
+
+    /// Identifier of the Postgres instance, written into the Finding.
+    #[arg(long, default_value = "fixture-pg")]
+    pg_instance: String,
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
@@ -34,6 +91,72 @@ fn main() {
     match cli.command {
         Some(Command::Version) | None => {
             println!("pgsleuth {} (pre-alpha)", env!("CARGO_PKG_VERSION"));
+            Ok(())
         }
+        Some(Command::TempSpill(args)) => run_temp_spill(args).await,
     }
+}
+
+async fn run_temp_spill(args: TempSpillArgs) -> Result<()> {
+    let pgdata = resolve_pgdata(&args).await?;
+    let cfg = TempSpillConfig {
+        pgdata,
+        footprint_threshold_bytes: args.footprint_threshold_mb.saturating_mul(1_024 * 1_024),
+        free_threshold_pct: args.free_threshold_pct,
+        interval: Duration::from_millis(args.interval_ms),
+        pg_instance_id: args.pg_instance,
+    };
+
+    let emitter = if args.otlp_endpoint.is_empty() {
+        tracing::info!("--otlp-endpoint empty; OTel emission disabled");
+        None
+    } else {
+        let otel_cfg = EmitterConfig {
+            otlp_endpoint: args.otlp_endpoint.clone(),
+            service_name: "pgsleuth-agent".to_string(),
+            resource_attributes: BTreeMap::new(),
+        };
+        match Emitter::try_new(&otel_cfg) {
+            Ok(e) => Some(e),
+            Err(e) => {
+                tracing::warn!(error = %e, "OTel Emitter init failed; continuing without it");
+                None
+            }
+        }
+    };
+
+    let result = temp_spill::run(cfg, emitter.as_ref()).await;
+
+    if let Some(e) = emitter {
+        e.shutdown();
+    }
+    result
+}
+
+/// Resolve `$PGDATA`: `--pgdata` wins; otherwise pull `SHOW data_directory`
+/// off the connection.
+async fn resolve_pgdata(args: &TempSpillArgs) -> Result<PathBuf> {
+    if let Some(p) = &args.pgdata {
+        return Ok(p.clone());
+    }
+    let conn = args
+        .pg_conn
+        .as_deref()
+        .context("either --pgdata or --pg-conn is required so the poller knows where to walk")?;
+    tracing::info!(pg_conn = conn, "Discovering pgdata via SHOW data_directory");
+    let (client, connection) = tokio_postgres::connect(conn, tokio_postgres::NoTls)
+        .await
+        .with_context(|| format!("Failed to connect to Postgres at {conn}"))?;
+    tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            tracing::warn!(error = %e, "Postgres connection task ended");
+        }
+    });
+    let row = client
+        .query_one("SHOW data_directory", &[])
+        .await
+        .context("SHOW data_directory failed")?;
+    let pgdata: String = row.get(0);
+    tracing::info!(pgdata, "Discovered pgdata via libpq");
+    Ok(PathBuf::from(pgdata))
 }
