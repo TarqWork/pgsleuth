@@ -64,3 +64,63 @@ pub struct BlockEvent {
 
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for BlockEvent {}
+
+/// Coarse classification of a block I/O request's operation. The
+/// kernel's `rwbs` field on block tracepoints is an 8-byte string of
+/// flag letters (R/W/F/FUA/SYNC/M/D); we squash it into a small enum
+/// so the histogram label space stays bounded.
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum OpClass {
+    /// Read.
+    Read = 0,
+    /// Write.
+    Write = 1,
+    /// Write + FLUSH or FUA (the fsync path).
+    WriteFlush = 2,
+    /// Anything else (discard, metadata, …).
+    Other = 3,
+}
+
+/// Pair `(dev_t, sector)` that uniquely identifies an in-flight block
+/// I/O request between `block_rq_issue` and `block_rq_complete`. Used
+/// as the BPF `HashMap` key in [`super::pgsleuth_ebpf`]; the kernel
+/// program inserts on issue and looks up + deletes on complete.
+///
+/// `(dev, sector)` is what BCC's `biolatency` uses for the same
+/// purpose. Collisions are theoretically possible under tens of
+/// millions of IOPS — far above any v0 target.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RqKey {
+    /// Kernel-encoded `dev_t`.
+    pub dev: u32,
+    /// Padding so the struct is `repr(C)`-aligned cleanly for BPF maps.
+    pub _pad: u32,
+    /// Starting sector of the request.
+    pub sector: u64,
+}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for RqKey {}
+
+/// Per-I/O latency event emitted by `block_rq_complete` after looking
+/// up the issue timestamp in the `INFLIGHT` map. Drives the userspace
+/// histogram + the "commit latency > 10ms for >3 intervals" rule.
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+pub struct BlockIoLatencyEvent {
+    /// Kernel-encoded `dev_t`.
+    pub dev: u32,
+    /// Op classification (read / write / write+flush / other).
+    pub op_class: u8,
+    /// 3 bytes of explicit padding so the struct layout is portable.
+    pub _pad: [u8; 3],
+    /// Request size in bytes.
+    pub bytes: u32,
+    /// `block_rq_complete.ts_ns - block_rq_issue.ts_ns`.
+    pub latency_ns: u64,
+}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for BlockIoLatencyEvent {}
