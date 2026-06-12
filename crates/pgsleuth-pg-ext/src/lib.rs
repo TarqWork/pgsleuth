@@ -72,6 +72,51 @@ mod tests {
     }
 
     #[pg_test]
+    fn test_wal_device_matches_stat_on_pgdata() {
+        // Independent path: shell out to `stat -c '%d' $PGDATA/pg_wal`
+        // and split the decimal st_dev into major:minor by hand. This
+        // catches a libc::major/minor implementation drift or a wrong
+        // DataDir read — the two paths share only the kernel's
+        // stat(2) result.
+        use std::process::Command;
+
+        let data_dir: String = Spi::get_one("SHOW data_directory")
+            .expect("SPI call failed")
+            .expect("NULL returned");
+        let wal_dir = format!("{data_dir}/pg_wal");
+
+        let stat_out = Command::new("stat")
+            .args(["-c", "%d", &wal_dir])
+            .output()
+            .unwrap_or_else(|e| panic!("stat invocation failed: {e}"));
+        assert!(
+            stat_out.status.success(),
+            "stat exited non-zero: {}",
+            String::from_utf8_lossy(&stat_out.stderr)
+        );
+        let st_dev: u64 = String::from_utf8_lossy(&stat_out.stdout)
+            .trim()
+            .parse()
+            .expect("stat output was not a decimal number");
+
+        // Linux MAJOR/MINOR for the 32-bit case (matches glibc's
+        // sysmacros.h). Simple-case form covers normal block devices;
+        // the OR-ed high bits cover the rare 64-bit dev_t.
+        let expected_major = ((st_dev >> 8) & 0xfff) | ((st_dev >> 32) & !0xfff);
+        let expected_minor = (st_dev & 0xff) | ((st_dev >> 12) & !0xff);
+        let expected = format!("{expected_major}:{expected_minor}");
+
+        let actual: String = Spi::get_one("SELECT pgsleuth_wal_device()")
+            .expect("SPI call failed")
+            .expect("NULL returned");
+
+        assert_eq!(
+            actual, expected,
+            "pgsleuth_wal_device()='{actual}' disagrees with stat({wal_dir}) st_dev={st_dev} -> '{expected}'"
+        );
+    }
+
+    #[pg_test]
     fn test_postmaster_pid_is_positive() {
         let pid: i32 = Spi::get_one("SELECT pgsleuth_postmaster_pid()")
             .expect("SPI call failed")
