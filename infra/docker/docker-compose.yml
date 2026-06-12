@@ -31,6 +31,7 @@ services:
       - ./setup-postgres.sh:/workspace/setup-postgres.sh
       - ./load-ebpf.sh:/workspace/load-ebpf.sh
       - ./install-pg-ext.sh:/workspace/install-pg-ext.sh
+      - ./validate-wal-device.sh:/workspace/validate-wal-device.sh
       - /sys/kernel/btf:/sys/kernel/btf:ro
       - /sys/fs/bpf:/sys/fs/bpf
     cap_add:

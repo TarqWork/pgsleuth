@@ -28,5 +28,16 @@ cd /workspace/build
 source /workspace/install-pg-ext.sh
 install_pg_extension
 
+# Cross-check pgsleuth_wal_device() against stat(2) on $PGDATA/pg_wal.
+# Surfaces SQL-vs-host disagreement before the eBPF kernel program
+# starts trusting that value. A SKIP (extension not installed) is fine;
+# a real mismatch fails the boot loud and clear.
+# shellcheck disable=SC1091
+source /workspace/validate-wal-device.sh
+if ! validate_wal_device; then
+    echo "[setup-postgres] FATAL: pgsleuth_wal_device() validation failed; refusing to advertise as ready" >&2
+    exit 1
+fi
+
 # Keep the container running
 sleep infinity
