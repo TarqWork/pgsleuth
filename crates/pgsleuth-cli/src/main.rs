@@ -9,7 +9,11 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "pgsleuth", version, about = "Postgres observability that thinks like a senior DBA")]
+#[command(
+    name = "pgsleuth",
+    version,
+    about = "Postgres observability that thinks like a senior DBA"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -21,7 +25,7 @@ enum Command {
     Version,
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
@@ -32,5 +36,4 @@ fn main() -> anyhow::Result<()> {
             println!("pgsleuth {} (pre-alpha)", env!("CARGO_PKG_VERSION"));
         }
     }
-    Ok(())
 }
