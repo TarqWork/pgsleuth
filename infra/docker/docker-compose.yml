@@ -34,6 +34,10 @@ services:
       - ./validate-wal-device.sh:/workspace/validate-wal-device.sh
       - /sys/kernel/btf:/sys/kernel/btf:ro
       - /sys/fs/bpf:/sys/fs/bpf
+      # setup-postgres.sh mounts tracefs at /sys/kernel/tracing inside
+      # the container so aya can attach kernel tracepoints
+      # (block:block_rq_issue, etc.). Requires SYS_ADMIN, which we
+      # already have for bpffs.
     cap_add:
       - BPF
       - PERFMON
