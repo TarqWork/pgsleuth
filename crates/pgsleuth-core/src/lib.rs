@@ -15,8 +15,10 @@
 //! contract change the brain watches for.
 
 mod finding;
+mod window;
 
 pub use finding::{
     AttributeValue, Finding, PgInstanceRef, PgRole, Remediation, Severity, Tier,
     FINDING_SCHEMA_VERSION,
 };
+pub use window::{BreachState, ConsecutiveBreachCounter};

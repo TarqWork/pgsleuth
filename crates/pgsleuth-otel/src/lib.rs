@@ -16,6 +16,9 @@
 //! infrastructure shim.
 
 mod mapping;
+mod metrics;
+
+pub use metrics::{MetricsEmitter, METRICS_SCOPE};
 
 use std::collections::BTreeMap;
 use std::time::SystemTime;
