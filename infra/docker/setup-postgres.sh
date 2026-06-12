@@ -4,6 +4,18 @@
 # are already present in the shared target/ tree. Idempotent — safe to
 # re-run; safe when artifacts are missing (skips with a warning).
 
+# Mount tracefs so aya can attach kernel tracepoints
+# (block:block_rq_issue, etc.). Requires SYS_ADMIN, which the compose
+# file grants. Safe to skip silently if the mount point isn't a
+# directory — bpf kprobes still work.
+if [ -d /sys/kernel/tracing ] && ! mountpoint -q /sys/kernel/tracing; then
+    if mount -t tracefs tracefs /sys/kernel/tracing 2>/dev/null; then
+        echo "[setup-postgres] mounted tracefs at /sys/kernel/tracing"
+    else
+        echo "[setup-postgres] WARN: failed to mount tracefs; tracepoint attach will fail"
+    fi
+fi
+
 echo "Starting Postgres..."
 docker-entrypoint.sh postgres &
 
