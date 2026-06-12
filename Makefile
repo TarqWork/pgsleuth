@@ -5,18 +5,31 @@
 # must always be testable from one command. If you ever find yourself
 # saying "but it works in just the Rust side" — that's a smell, fix it here.
 
-.PHONY: help dev test lint fmt build clean check ci
+.PHONY: help dev test lint fmt build clean check ci \
+        fixture-up fixture-down fixture-logs fixture-status fixture-psql fixture-reset
+
+# Compose file for the dev Postgres fixture (primary + 2 replicas with
+# pg_stat_statements + auto_explain). See infra/docker/pg-fixture/README.md.
+FIXTURE_COMPOSE := infra/docker/pg-fixture.compose.yml
 
 help:
 	@echo "pgsleuth — top-level targets:"
-	@echo "  make dev      — install dev deps for both stacks"
-	@echo "  make test     — run all tests (Rust + Python)"
-	@echo "  make lint     — run all linters (clippy + ruff + mypy)"
-	@echo "  make fmt      — format both stacks (rustfmt + ruff format)"
-	@echo "  make build    — build the agent in release mode"
-	@echo "  make check    — fast type/syntax check, no tests"
-	@echo "  make ci       — what CI runs: lint + test"
-	@echo "  make clean    — remove build artifacts"
+	@echo "  make dev             — install dev deps + bring up the Postgres fixture"
+	@echo "  make test            — run all tests (Rust + Python)"
+	@echo "  make lint            — run all linters (clippy + ruff + mypy)"
+	@echo "  make fmt             — format both stacks (rustfmt + ruff format)"
+	@echo "  make build           — build the agent in release mode"
+	@echo "  make check           — fast type/syntax check, no tests"
+	@echo "  make ci              — what CI runs: lint + test"
+	@echo "  make clean           — remove build artifacts"
+	@echo ""
+	@echo "  Postgres dev fixture (primary :5432, replicas :5433/:5434):"
+	@echo "  make fixture-up      — bring it up (detached)"
+	@echo "  make fixture-down    — stop it (keeps named volumes)"
+	@echo "  make fixture-reset   — stop it + drop volumes (full re-bootstrap next time)"
+	@echo "  make fixture-status  — docker compose ps"
+	@echo "  make fixture-logs    — tail compose logs"
+	@echo "  make fixture-psql    — open psql on the primary as postgres"
 
 dev:
 	@echo "==> Rust toolchain"
@@ -27,7 +40,33 @@ dev:
 	@python3 --version
 	@echo "==> Installing brain dev deps"
 	cd brain && python3 -m pip install -e ".[dev]"
+	@echo "==> Bringing up the Postgres dev fixture"
+	@command -v docker >/dev/null 2>&1 || { echo "Install Docker first: https://docs.docker.com/get-docker/"; exit 1; }
+	$(MAKE) fixture-up
 	@echo "==> Done. Run 'make test' to verify."
+
+# --- dev fixture --------------------------------------------------------------
+fixture-up:
+	docker compose -f $(FIXTURE_COMPOSE) up -d
+	@echo "==> primary: postgres://postgres@localhost:5432/postgres"
+	@echo "    replica-1: postgres://postgres@localhost:5433/postgres"
+	@echo "    replica-2: postgres://postgres@localhost:5434/postgres"
+	@echo "    agent:    postgres://pgsleuth_agent:pgsleuth@localhost:5432/postgres"
+
+fixture-down:
+	docker compose -f $(FIXTURE_COMPOSE) down
+
+fixture-reset:
+	docker compose -f $(FIXTURE_COMPOSE) down -v
+
+fixture-status:
+	docker compose -f $(FIXTURE_COMPOSE) ps
+
+fixture-logs:
+	docker compose -f $(FIXTURE_COMPOSE) logs -f
+
+fixture-psql:
+	docker compose -f $(FIXTURE_COMPOSE) exec pg-primary psql -U postgres -d postgres
 
 test: test-rust test-python
 

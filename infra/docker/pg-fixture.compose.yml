@@ -1,0 +1,108 @@
+# pgsleuth dev Postgres fixture: primary + 2 streaming replicas with
+# pg_stat_statements + auto_explain enabled. Used by `make dev` for
+# local development and by the (forthcoming) Tier 1 collector
+# integration tests.
+#
+# Distinct from `docker-compose.yml` (the eBPF feasibility rig). Bring
+# this one up via:
+#   make fixture-up
+#   # or directly:
+#   docker compose -f pgsleuth/infra/docker/pg-fixture.compose.yml up -d
+#
+# Connection strings (default credentials, NOT for production):
+#   primary:    postgres://postgres@localhost:5432/postgres
+#   replica-1:  postgres://postgres@localhost:5433/postgres
+#   replica-2:  postgres://postgres@localhost:5434/postgres
+#   agent:      postgres://pgsleuth_agent:pgsleuth@localhost:5432/postgres
+
+services:
+  pg-primary:
+    image: postgres:17-bookworm
+    container_name: pgsleuth-fixture-primary
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+    command:
+      - postgres
+      - -c
+      - config_file=/etc/postgresql/postgresql.conf
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
+    volumes:
+      - ./pg-fixture/postgresql.primary.conf:/etc/postgresql/postgresql.conf:ro
+      - ./pg-fixture/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./pg-fixture/init-primary.sql:/docker-entrypoint-initdb.d/00-init-primary.sql:ro
+      - pg-fixture-primary-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - pg-fixture-net
+
+  pg-replica-1:
+    image: postgres:17-bookworm
+    container_name: pgsleuth-fixture-replica-1
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      REPLICA_PRIMARY_HOST: pg-primary
+      REPLICA_PRIMARY_PORT: "5432"
+      REPLICA_SLOT_NAME: replica_1
+    entrypoint: ["/usr/local/bin/replica-entrypoint.sh"]
+    command: ["postgres"]
+    volumes:
+      - ./pg-fixture/replica-entrypoint.sh:/usr/local/bin/replica-entrypoint.sh:ro
+      - pg-fixture-replica-1-data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    depends_on:
+      pg-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - pg-fixture-net
+
+  pg-replica-2:
+    image: postgres:17-bookworm
+    container_name: pgsleuth-fixture-replica-2
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      REPLICA_PRIMARY_HOST: pg-primary
+      REPLICA_PRIMARY_PORT: "5432"
+      REPLICA_SLOT_NAME: replica_2
+    entrypoint: ["/usr/local/bin/replica-entrypoint.sh"]
+    command: ["postgres"]
+    volumes:
+      - ./pg-fixture/replica-entrypoint.sh:/usr/local/bin/replica-entrypoint.sh:ro
+      - pg-fixture-replica-2-data:/var/lib/postgresql/data
+    ports:
+      - "5434:5432"
+    depends_on:
+      pg-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - pg-fixture-net
+
+volumes:
+  pg-fixture-primary-data:
+  pg-fixture-replica-1-data:
+  pg-fixture-replica-2-data:
+
+networks:
+  pg-fixture-net:
+    driver: bridge
