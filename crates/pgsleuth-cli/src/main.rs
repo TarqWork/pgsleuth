@@ -13,6 +13,7 @@
 //!   as deltas since the last poll.
 //! * `pgsleuth version` — prints version + build info.
 
+mod collect_pg_activity;
 mod collect_pg_stmt;
 mod temp_spill;
 
@@ -45,6 +46,27 @@ enum Command {
     TempSpill(TempSpillArgs),
     /// Tier-1 collector — `pg_stat_statements` polling (#23).
     PgStatStatements(PgStatStatementsArgs),
+    /// Tier-1 collector — `pg_stat_activity` snapshot polling (#24).
+    PgStatActivity(PgStatActivityArgs),
+}
+
+#[derive(Parser, Debug)]
+struct PgStatActivityArgs {
+    /// Postgres libpq connection string.
+    #[arg(
+        long,
+        default_value = "postgres://pgsleuth_agent:pgsleuth@localhost:5432/postgres"
+    )]
+    pg_conn: String,
+
+    /// Poll interval in milliseconds.
+    #[arg(long, default_value_t = 5_000)]
+    interval_ms: u64,
+
+    /// Sessions whose open transaction is older than this count toward
+    /// `long_running_xacts`.
+    #[arg(long, default_value_t = 60)]
+    long_xact_threshold_seconds: u64,
 }
 
 #[derive(Parser, Debug)]
@@ -118,6 +140,14 @@ async fn main() -> Result<()> {
         }
         Some(Command::TempSpill(args)) => run_temp_spill(args).await,
         Some(Command::PgStatStatements(args)) => run_pg_stat_statements(args).await,
+        Some(Command::PgStatActivity(args)) => {
+            collect_pg_activity::run(
+                &args.pg_conn,
+                args.interval_ms,
+                args.long_xact_threshold_seconds,
+            )
+            .await
+        }
     }
 }
 
