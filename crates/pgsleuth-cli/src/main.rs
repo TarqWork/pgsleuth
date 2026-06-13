@@ -5,14 +5,15 @@
 //!
 //! Today this binary hosts the polling rules. Subcommand layout:
 //!
-//! * `pgsleuth temp-spill` — runs Alarm 12b (capacity-side temp-file
-//!   spill, #47). Polls `$PGDATA/base/pgsql_tmp/` size and the mount's
-//!   free space; emits a Finding when either threshold trips.
+//! * `pgsleuth temp-spill` — Alarm 12b (capacity-side temp-file
+//!   spill, #47). Polls `$PGDATA/base/pgsql_tmp/` size and mount free
+//!   space; emits a Finding when either threshold trips.
+//! * `pgsleuth pg-stat-statements` — Tier-1 collector (#23). Polls
+//!   `pg_stat_statements`, emits `pgsleuth.pg.stmt.*` `OTel` counters
+//!   as deltas since the last poll.
 //! * `pgsleuth version` — prints version + build info.
-//!
-//! Future polling collectors (Tier 1) plug in as siblings of
-//! `temp-spill`.
 
+mod collect_pg_stmt;
 mod temp_spill;
 
 use std::collections::BTreeMap;
@@ -21,7 +22,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use pgsleuth_otel::{Emitter, EmitterConfig};
+use pgsleuth_otel::{Emitter, EmitterConfig, MetricsEmitter};
 
 use crate::temp_spill::TempSpillConfig;
 
@@ -42,6 +43,28 @@ enum Command {
     Version,
     /// Alarm 12b — Temp-File Spill capacity poller (#47).
     TempSpill(TempSpillArgs),
+    /// Tier-1 collector — `pg_stat_statements` polling (#23).
+    PgStatStatements(PgStatStatementsArgs),
+}
+
+#[derive(Parser, Debug)]
+struct PgStatStatementsArgs {
+    /// Postgres libpq connection string.
+    #[arg(
+        long,
+        default_value = "postgres://pgsleuth_agent:pgsleuth@localhost:5432/postgres"
+    )]
+    pg_conn: String,
+
+    /// Poll interval in milliseconds.
+    #[arg(long, default_value_t = 5_000)]
+    interval_ms: u64,
+
+    /// `OTLP`/gRPC endpoint for `pgsleuth.pg.stmt.*` counters. Empty
+    /// string disables `OTel` emission (deltas still logged via
+    /// `tracing` at INFO).
+    #[arg(long, default_value = "")]
+    otlp_endpoint: String,
 }
 
 #[derive(Parser, Debug)]
@@ -94,7 +117,33 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Some(Command::TempSpill(args)) => run_temp_spill(args).await,
+        Some(Command::PgStatStatements(args)) => run_pg_stat_statements(args).await,
     }
+}
+
+async fn run_pg_stat_statements(args: PgStatStatementsArgs) -> Result<()> {
+    let metrics = if args.otlp_endpoint.is_empty() {
+        tracing::info!("--otlp-endpoint empty; OTel metrics disabled");
+        None
+    } else {
+        let cfg = EmitterConfig {
+            otlp_endpoint: args.otlp_endpoint.clone(),
+            service_name: "pgsleuth-agent".to_string(),
+            resource_attributes: BTreeMap::new(),
+        };
+        match MetricsEmitter::try_new(&cfg) {
+            Ok(m) => Some(m),
+            Err(e) => {
+                tracing::warn!(error = %e, "MetricsEmitter init failed; continuing without it");
+                None
+            }
+        }
+    };
+    let result = collect_pg_stmt::run(&args.pg_conn, args.interval_ms, metrics.as_ref()).await;
+    if let Some(m) = metrics {
+        m.shutdown();
+    }
+    result
 }
 
 async fn run_temp_spill(args: TempSpillArgs) -> Result<()> {

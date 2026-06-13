@@ -20,16 +20,47 @@ use opentelemetry::{
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{metrics::SdkMeterProvider, runtime};
 
+use opentelemetry::metrics::Counter;
+
 use crate::EmitterConfig;
 
 /// Instrumentation scope name reported on every metric record.
 pub const METRICS_SCOPE: &str = "pgsleuth";
+
+/// One delta to record on `pgsleuth.pg.stmt.*` counters. Constructed
+/// by the cli collector from a pair of `StatementSample`s.
+pub struct PgStmtDelta<'a> {
+    /// `pg_stat_statements.queryid`.
+    pub queryid: i64,
+    /// `pg_database.datname`.
+    pub database: &'a str,
+    /// `pg_authid.rolname`.
+    pub username: &'a str,
+    /// Increment for `pgsleuth.pg.stmt.calls`.
+    pub calls: u64,
+    /// Increment for `pgsleuth.pg.stmt.total_exec_time_ms`.
+    pub exec_time_ms: u64,
+    /// Increment for `pgsleuth.pg.stmt.rows`.
+    pub rows: u64,
+    /// Increment for `pgsleuth.pg.stmt.shared_blks_hit`.
+    pub blks_hit: u64,
+    /// Increment for `pgsleuth.pg.stmt.shared_blks_read`.
+    pub blks_read: u64,
+}
 
 /// Sibling of [`crate::Emitter`] for metrics. Owns an `SdkMeterProvider`
 /// + the named histograms pgsleuth records into.
 pub struct MetricsEmitter {
     provider: SdkMeterProvider,
     wal_io_latency: Histogram<u64>,
+    // pg_stat_statements counters — collector adds the *delta* since
+    // the previous poll on each call so the wire counter stays
+    // monotonically increasing.
+    pg_stmt_calls: Counter<u64>,
+    pg_stmt_exec_time_ms: Counter<u64>,
+    pg_stmt_rows: Counter<u64>,
+    pg_stmt_blks_hit: Counter<u64>,
+    pg_stmt_blks_read: Counter<u64>,
 }
 
 impl MetricsEmitter {
@@ -67,10 +98,53 @@ impl MetricsEmitter {
             .with_unit("ns")
             .init();
 
+        let pg_stmt_calls = meter
+            .u64_counter("pgsleuth.pg.stmt.calls")
+            .with_description("pg_stat_statements.calls (delta since previous poll).")
+            .init();
+        let pg_stmt_exec_time_ms = meter
+            .u64_counter("pgsleuth.pg.stmt.total_exec_time_ms")
+            .with_description("pg_stat_statements.total_exec_time delta since previous poll.")
+            .with_unit("ms")
+            .init();
+        let pg_stmt_rows = meter
+            .u64_counter("pgsleuth.pg.stmt.rows")
+            .with_description("pg_stat_statements.rows (delta since previous poll).")
+            .init();
+        let pg_stmt_blks_hit = meter
+            .u64_counter("pgsleuth.pg.stmt.shared_blks_hit")
+            .with_description("pg_stat_statements.shared_blks_hit (delta since previous poll).")
+            .init();
+        let pg_stmt_blks_read = meter
+            .u64_counter("pgsleuth.pg.stmt.shared_blks_read")
+            .with_description("pg_stat_statements.shared_blks_read (delta since previous poll).")
+            .init();
+
         Ok(Self {
             provider,
             wal_io_latency,
+            pg_stmt_calls,
+            pg_stmt_exec_time_ms,
+            pg_stmt_rows,
+            pg_stmt_blks_hit,
+            pg_stmt_blks_read,
         })
+    }
+
+    /// Record one statement-sample delta. Attributes are
+    /// `pgsleuth.pg.queryid`, `db.name`, `pgsleuth.pg.user`. The cli
+    /// diff-and-emit loop computes deltas — this method just adds.
+    pub fn record_pg_stmt_delta(&self, delta: &PgStmtDelta<'_>) {
+        let attrs = [
+            KeyValue::new("pgsleuth.pg.queryid", delta.queryid.to_string()),
+            KeyValue::new("db.name", delta.database.to_string()),
+            KeyValue::new("pgsleuth.pg.user", delta.username.to_string()),
+        ];
+        self.pg_stmt_calls.add(delta.calls, &attrs);
+        self.pg_stmt_exec_time_ms.add(delta.exec_time_ms, &attrs);
+        self.pg_stmt_rows.add(delta.rows, &attrs);
+        self.pg_stmt_blks_hit.add(delta.blks_hit, &attrs);
+        self.pg_stmt_blks_read.add(delta.blks_read, &attrs);
     }
 
     /// Record a single per-IO latency sample on

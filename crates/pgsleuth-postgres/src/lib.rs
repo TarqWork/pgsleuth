@@ -3,17 +3,34 @@
 
 //! Postgres collectors.
 //!
-//! Each collector queries a specific set of `pg_stat_*` views and produces
-//! raw observations. Rules consume observations and produce findings.
-//!
-//! Pre-alpha: empty scaffold. First collector lands week 3.
+//! Each collector queries a specific set of `pg_stat_*` views and
+//! produces *normalized samples* — typed Rust structs that the rule
+//! engine (#28) will subscribe to. Today the cli wires them straight
+//! into the `OTel` metrics emitter; when the engine lands, the
+//! collector contracts here are stable and only the wiring changes.
 
-#![allow(missing_docs)] // pre-alpha
+pub mod stat_statements;
 
-pub mod stat_statements {
-    //! `pg_stat_statements` collector. Phase 1, week 3.
-}
+/// Minor version + extension probing helpers shared across collectors.
+pub mod pg_version {
+    use anyhow::{Context, Result};
 
-pub mod stat_activity {
-    //! `pg_stat_activity` collector for live-session diagnostics. Phase 1, week 4.
+    /// Read `server_version_num` (e.g. `170002` for 17.2) and return
+    /// the *major* version.
+    ///
+    /// # Errors
+    ///
+    /// Surfaces the underlying SQL error when `SHOW server_version_num`
+    /// fails or returns a non-numeric value.
+    pub async fn major(client: &tokio_postgres::Client) -> Result<u32> {
+        let row = client
+            .query_one("SHOW server_version_num", &[])
+            .await
+            .context("SHOW server_version_num failed")?;
+        let s: String = row.get(0);
+        let n: u32 = s
+            .parse()
+            .with_context(|| format!("server_version_num={s:?} did not parse"))?;
+        Ok(n / 10_000)
+    }
 }
