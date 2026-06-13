@@ -18,7 +18,7 @@
 mod mapping;
 mod metrics;
 
-pub use metrics::{MetricsEmitter, METRICS_SCOPE};
+pub use metrics::{MetricsEmitter, PgStmtDelta, METRICS_SCOPE};
 
 use std::collections::BTreeMap;
 use std::time::SystemTime;
