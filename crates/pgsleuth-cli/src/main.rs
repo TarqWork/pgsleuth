@@ -13,6 +13,7 @@
 //!   as deltas since the last poll.
 //! * `pgsleuth version` — prints version + build info.
 
+mod checkpoint_storm;
 mod collect_pg_activity;
 mod collect_pg_stmt;
 mod temp_spill;
@@ -48,6 +49,37 @@ enum Command {
     PgStatStatements(PgStatStatementsArgs),
     /// Tier-1 collector — `pg_stat_activity` snapshot polling (#24).
     PgStatActivity(PgStatActivityArgs),
+    /// Alarm 13 — Checkpoint storm classifier (#46).
+    CheckpointStorm(CheckpointStormArgs),
+}
+
+#[derive(Parser, Debug)]
+struct CheckpointStormArgs {
+    /// Postgres libpq connection string.
+    #[arg(
+        long,
+        default_value = "postgres://pgsleuth_agent:pgsleuth@localhost:5432/postgres"
+    )]
+    pg_conn: String,
+
+    /// Poll interval in milliseconds.
+    #[arg(long, default_value_t = 5_000)]
+    interval_ms: u64,
+
+    /// Fire a Finding when the dominant bucket recurs for this many
+    /// consecutive intervals.
+    #[arg(long, default_value_t = 3)]
+    fire_after: u32,
+
+    /// `OTLP`/gRPC endpoint for the Finding log emitter. Empty string
+    /// disables `OTel` emission (Finding still logged via `tracing` at
+    /// WARN).
+    #[arg(long, default_value = "")]
+    otlp_endpoint: String,
+
+    /// Identifier of the Postgres instance, written into the Finding.
+    #[arg(long, default_value = "fixture-pg")]
+    pg_instance: String,
 }
 
 #[derive(Parser, Debug)]
@@ -148,7 +180,40 @@ async fn main() -> Result<()> {
             )
             .await
         }
+        Some(Command::CheckpointStorm(args)) => run_checkpoint_storm(args).await,
     }
+}
+
+async fn run_checkpoint_storm(args: CheckpointStormArgs) -> Result<()> {
+    let emitter = if args.otlp_endpoint.is_empty() {
+        tracing::info!("--otlp-endpoint empty; OTel emission disabled");
+        None
+    } else {
+        let cfg = EmitterConfig {
+            otlp_endpoint: args.otlp_endpoint.clone(),
+            service_name: "pgsleuth-agent".to_string(),
+            resource_attributes: BTreeMap::new(),
+        };
+        match Emitter::try_new(&cfg) {
+            Ok(e) => Some(e),
+            Err(e) => {
+                tracing::warn!(error = %e, "OTel Emitter init failed; continuing without it");
+                None
+            }
+        }
+    };
+    let result = checkpoint_storm::run(
+        &args.pg_conn,
+        args.interval_ms,
+        args.fire_after,
+        &args.pg_instance,
+        emitter.as_ref(),
+    )
+    .await;
+    if let Some(e) = emitter {
+        e.shutdown();
+    }
+    result
 }
 
 async fn run_pg_stat_statements(args: PgStatStatementsArgs) -> Result<()> {

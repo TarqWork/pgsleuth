@@ -10,6 +10,7 @@
 //! collector contracts here are stable and only the wiring changes.
 
 pub mod stat_activity;
+pub mod stat_checkpointer;
 pub mod stat_statements;
 
 /// Minor version + extension probing helpers shared across collectors.
