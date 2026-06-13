@@ -2,14 +2,18 @@
 #![no_main]
 
 use aya_ebpf::{
-    helpers::{bpf_get_current_cgroup_id, bpf_get_current_comm, bpf_ktime_get_ns},
+    helpers::{
+        bpf_get_current_cgroup_id, bpf_get_current_comm, bpf_ktime_get_ns,
+        bpf_probe_read_user_str_bytes,
+    },
     macros::{kprobe, map, tracepoint},
     maps::{Array, HashMap, RingBuf},
     programs::{ProbeContext, TracePointContext},
     EbpfContext,
 };
 use pgsleuth_ebpf_common::{
-    BlockEvent, BlockIoLatencyEvent, FilterConfig, OpClass, RqKey, TraceEvent,
+    BlockEvent, BlockIoLatencyEvent, FilterConfig, OpClass, RqKey, TempFileEvent, TraceEvent,
+    FILE_EVENT_PATH_LEN,
 };
 
 // BPF map to store the filter configuration
@@ -38,6 +42,20 @@ static mut INFLIGHT: HashMap<RqKey, u64> = HashMap::with_max_entries(8192, 0);
 // `block_rq_complete` tracepoint after the issue lookup succeeds.
 #[map]
 static mut LATENCY_EVENTS: RingBuf = RingBuf::with_byte_size(1 << 14, 0);
+
+// Ring buffer for temp-file syscall events (#45).
+#[map]
+static mut TEMP_FILE_EVENTS: RingBuf = RingBuf::with_byte_size(1 << 15, 0);
+
+/// `sys_enter_openat` tracepoint format:
+///   common header   offset 0..8
+///   __syscall_nr    offset 8   size 4
+///   dfd             offset 16  size 8 (long)
+///   const char *fn  offset 24  size 8 (user pointer)
+///   flags           offset 32  size 8
+///   mode            offset 40  size 8
+const OPENAT_OFF_FILENAME: usize = 24;
+const UNLINKAT_OFF_FILENAME: usize = 24;
 
 // `block:block_rq_issue` tracepoint format (kernel 5.x+):
 //
@@ -296,6 +314,70 @@ pub fn pgsleuth_block_rq_complete(ctx: TracePointContext) -> u32 {
             bytes,
             latency_ns,
         });
+        entry.submit(0);
+    }
+
+    0
+}
+
+/// `syscalls:sys_enter_openat` — fires on every `openat(2)` entry. We
+/// filter by PID (from `FilterConfig.pid`); the userspace loader is
+/// responsible for the path-substring filter ("contains `pgsql_tmp`")
+/// because eBPF substring search is fragile. Volume on a real Postgres
+/// is moderate; on the v0 fixture (single agent connection) it's tiny.
+#[tracepoint]
+pub fn pgsleuth_sys_enter_openat(ctx: TracePointContext) -> u32 {
+    capture_file_syscall(&ctx, 0, OPENAT_OFF_FILENAME)
+}
+
+/// `syscalls:sys_enter_unlinkat` — fires on every `unlinkat(2)` entry.
+/// Same filtering story as the openat probe.
+#[tracepoint]
+pub fn pgsleuth_sys_enter_unlinkat(ctx: TracePointContext) -> u32 {
+    capture_file_syscall(&ctx, 1, UNLINKAT_OFF_FILENAME)
+}
+
+fn capture_file_syscall(ctx: &TracePointContext, syscall_kind: u8, off_filename: usize) -> u32 {
+    let config = unsafe {
+        match FILTER_CONFIG.get(0u32) {
+            Some(c) => c,
+            None => return 0,
+        }
+    };
+    let current_pid = ctx.pid();
+    if config.pid != 0 && current_pid != config.pid {
+        return 0;
+    }
+
+    let filename_ptr: *const u8 = match unsafe { ctx.read_at::<*const u8>(off_filename) } {
+        Ok(p) => p,
+        Err(_) => return 0,
+    };
+    if filename_ptr.is_null() {
+        return 0;
+    }
+
+    let comm = match bpf_get_current_comm() {
+        Ok(c) => c,
+        _ => [0u8; 16],
+    };
+
+    if let Some(mut entry) = unsafe { TEMP_FILE_EVENTS.reserve::<TempFileEvent>(0) } {
+        let evt_ptr: *mut TempFileEvent = entry.as_mut_ptr().cast();
+        unsafe {
+            (*evt_ptr).pid = current_pid;
+            (*evt_ptr).syscall = syscall_kind;
+            (*evt_ptr)._pad = [0u8; 3];
+            (*evt_ptr).bytes = 0;
+            (*evt_ptr).query_hash = 0;
+            (*evt_ptr).comm = comm;
+            (*evt_ptr).path = [0u8; FILE_EVENT_PATH_LEN];
+            // Read the user-space path string into the event payload.
+            // Errors are best-effort — we still emit the event with an
+            // empty path so the userspace dedup keeps PID telemetry.
+            let path_slice: &mut [u8] = &mut (*evt_ptr).path;
+            let _ = bpf_probe_read_user_str_bytes(filename_ptr, path_slice);
+        }
         entry.submit(0);
     }
 
