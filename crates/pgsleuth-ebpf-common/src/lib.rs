@@ -124,3 +124,39 @@ pub struct BlockIoLatencyEvent {
 
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for BlockIoLatencyEvent {}
+
+/// Maximum bytes captured from the `openat`/`unlinkat` filename. 128 is
+/// enough for any realistic `pgsql_tmp/...` path under `$PGDATA`.
+pub const FILE_EVENT_PATH_LEN: usize = 128;
+
+/// Event emitted by the `syscalls:sys_enter_openat` /
+/// `sys_enter_unlinkat` tracepoints. Per-event userspace filter checks
+/// whether `path` contains `pgsql_tmp` and emits a `Finding` if so.
+/// v0 ships syscall tracepoints only; the `BufFileCreateTemp` uprobe
+/// for byte-counting + query-hash attribution lands later — the event
+/// shape leaves slots (`bytes`, `query_hash`) for those values to be
+/// filled in without breaking the wire.
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+pub struct TempFileEvent {
+    /// PID of the backend that issued the syscall.
+    pub pid: u32,
+    /// Syscall kind: 0 = openat, 1 = unlinkat. Anything else reserved.
+    pub syscall: u8,
+    /// 3 bytes of padding so subsequent fields are u32-aligned.
+    pub _pad: [u8; 3],
+    /// Bytes written, or 0 when the uprobe attribution layer hasn't
+    /// landed (v0). Future: filled in by `BufFileCreateTemp` /
+    /// `BufFileWrite` uprobes.
+    pub bytes: u64,
+    /// Stable query hash, or 0 in v0. Future: filled in by the same
+    /// uprobe layer that knows which backend is running which query.
+    pub query_hash: u64,
+    /// Process command (`comm`).
+    pub comm: [u8; 16],
+    /// Null-terminated path bytes read from the user pointer.
+    pub path: [u8; FILE_EVENT_PATH_LEN],
+}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for TempFileEvent {}

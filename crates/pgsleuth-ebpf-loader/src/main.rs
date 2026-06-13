@@ -24,8 +24,11 @@ use pgsleuth_core::{
     AttributeValue, BreachState, ConsecutiveBreachCounter, Finding, PgInstanceRef, PgRole,
     Remediation, Severity, Tier, FINDING_SCHEMA_VERSION,
 };
-use pgsleuth_ebpf_common::{BlockEvent, BlockIoLatencyEvent, FilterConfig, OpClass, TraceEvent};
+use pgsleuth_ebpf_common::{
+    BlockEvent, BlockIoLatencyEvent, FilterConfig, OpClass, TempFileEvent, TraceEvent,
+};
 use pgsleuth_otel::{Emitter, EmitterConfig, MetricsEmitter};
+use std::collections::HashSet;
 use tokio::io::unix::AsyncFd;
 use tokio::signal;
 use tokio::time::{interval, MissedTickBehavior};
@@ -342,6 +345,18 @@ async fn main() -> Result<()> {
     attach_kprobe(&mut bpf)?;
     attach_block_issue(&mut bpf)?;
     attach_block_complete(&mut bpf)?;
+    attach_syscall_tracepoint(
+        &mut bpf,
+        "pgsleuth_sys_enter_openat",
+        "syscalls",
+        "sys_enter_openat",
+    )?;
+    attach_syscall_tracepoint(
+        &mut bpf,
+        "pgsleuth_sys_enter_unlinkat",
+        "syscalls",
+        "sys_enter_unlinkat",
+    )?;
 
     let events_map = RingBuf::try_from(bpf.take_map("EVENTS").context("Failed to get EVENTS map")?)
         .context("Failed to convert EVENTS map to RingBuf")?;
@@ -355,12 +370,20 @@ async fn main() -> Result<()> {
             .context("Failed to get LATENCY_EVENTS map")?,
     )
     .context("Failed to convert LATENCY_EVENTS map to RingBuf")?;
+    let temp_file_events_map = RingBuf::try_from(
+        bpf.take_map("TEMP_FILE_EVENTS")
+            .context("Failed to get TEMP_FILE_EVENTS map")?,
+    )
+    .context("Failed to convert TEMP_FILE_EVENTS map to RingBuf")?;
 
     let mut events_fd = AsyncFd::new(events_map).context("Failed to create AsyncFd for EVENTS")?;
     let mut block_fd =
         AsyncFd::new(block_events_map).context("Failed to create AsyncFd for BLOCK_EVENTS")?;
     let mut latency_fd =
         AsyncFd::new(latency_events_map).context("Failed to create AsyncFd for LATENCY_EVENTS")?;
+    let mut temp_fd = AsyncFd::new(temp_file_events_map)
+        .context("Failed to create AsyncFd for TEMP_FILE_EVENTS")?;
+    let mut seen_spills: HashSet<(u32, String)> = HashSet::new();
 
     info!(
         "Rule: storage.wal.fsync.jitter — P50 > {} ms for {} consecutive {} ms intervals",
@@ -404,6 +427,45 @@ async fn main() -> Result<()> {
                         "Block I/O on WAL dev! dev={} pid={} bytes={} comm='{}'",
                         event.dev, event.pid, event.bytes, comm
                     );
+                }
+                guard.clear_ready();
+            }
+            res = temp_fd.readable_mut() => {
+                let mut guard = res.context("Failed to poll TEMP_FILE_EVENTS ring buffer")?;
+                let rb = guard.get_inner_mut();
+                while let Some(item) = rb.next() {
+                    let event = unsafe { &*(item.as_ptr() as *const TempFileEvent) };
+                    let path = path_from_event(&event.path);
+                    if !path.contains("pgsql_tmp") {
+                        continue;
+                    }
+                    let key = (event.pid, path.clone());
+                    if !seen_spills.insert(key) {
+                        continue;
+                    }
+                    let comm = std::str::from_utf8(&event.comm)
+                        .unwrap_or("unknown")
+                        .trim_matches(char::from(0))
+                        .to_string();
+                    let syscall_str = match event.syscall {
+                        0 => "openat",
+                        1 => "unlinkat",
+                        _ => "other",
+                    };
+                    info!(
+                        "Temp-file spill detected via {} pid={} comm='{}' path='{}'",
+                        syscall_str, event.pid, comm, path
+                    );
+                    let finding = build_temp_file_finding(
+                        &args.pg_instance,
+                        event.pid,
+                        &comm,
+                        &path,
+                        syscall_str,
+                    );
+                    if let Some(em) = log_emitter.as_ref() {
+                        em.emit(&finding);
+                    }
                 }
                 guard.clear_ready();
             }
@@ -537,6 +599,80 @@ fn attach_block_issue(bpf: &mut Ebpf) -> Result<()> {
         .context("Failed to attach tracepoint block:block_rq_issue")?;
     info!("Successfully attached tracepoint block:block_rq_issue");
     Ok(())
+}
+
+fn attach_syscall_tracepoint(
+    bpf: &mut Ebpf,
+    program: &'static str,
+    category: &str,
+    name: &str,
+) -> Result<()> {
+    let tp: &mut TracePoint = bpf
+        .program_mut(program)
+        .with_context(|| format!("Failed to get {program} program"))?
+        .try_into()
+        .with_context(|| format!("Failed to coerce {program} to TracePoint"))?;
+    tp.load()
+        .with_context(|| format!("Failed to load {program}"))?;
+    tp.attach(category, name)
+        .with_context(|| format!("Failed to attach {category}:{name}"))?;
+    info!("Successfully attached tracepoint {category}:{name}");
+    Ok(())
+}
+
+/// Extract a UTF-8-best-effort path from the raw event buffer. Stops
+/// at the first NUL byte (the kernel string copy is NUL-terminated)
+/// and clamps invalid bytes to `?` so the rest of the userspace path
+/// stays useful for the operator log.
+fn path_from_event(buf: &[u8]) -> String {
+    let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+    String::from_utf8_lossy(&buf[..end]).into_owned()
+}
+
+fn build_temp_file_finding(
+    pg_instance: &str,
+    pid: u32,
+    comm: &str,
+    path: &str,
+    syscall: &str,
+) -> Finding {
+    let mut otel_attributes = BTreeMap::new();
+    otel_attributes.insert(
+        "pgsleuth.spill.attribution_layer".to_string(),
+        AttributeValue::String("syscall_only".to_string()),
+    );
+    Finding {
+        schema_version: FINDING_SCHEMA_VERSION,
+        rule_id: "storage.temp_spill.attribution".to_string(),
+        rule_version: 1,
+        tier: Tier::Deep,
+        severity: Severity::Medium,
+        fired_at: Utc::now(),
+        pg_instance: PgInstanceRef {
+            id: pg_instance.to_string(),
+            db_name: None,
+            role: PgRole::Unknown,
+        },
+        summary: format!("Temp-file spill detected on PID {pid} ({comm}) via {syscall}: {path}"),
+        evidence: serde_json::json!({
+            "pid": pid,
+            "comm": comm,
+            "path": path,
+            "syscall": syscall,
+            "bytes_spilled": null,
+            "query_hash": null,
+            "attribution_layer": "syscall_only",
+        }),
+        remediation: Remediation {
+            text: "Identify the backend's running query (pg_stat_activity.pid) and raise \
+                   work_mem for that session, or rewrite the query to avoid the spill. \
+                   When the BufFileCreateTemp uprobe layer ships, the Finding will carry \
+                   the offending query_hash directly."
+                .to_string(),
+            knobs: vec!["work_mem".to_string(), "temp_file_limit".to_string()],
+        },
+        otel_attributes,
+    }
 }
 
 fn attach_block_complete(bpf: &mut Ebpf) -> Result<()> {
