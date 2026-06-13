@@ -16,6 +16,7 @@
 mod checkpoint_storm;
 mod collect_pg_activity;
 mod collect_pg_stmt;
+mod connection_storm;
 mod temp_spill;
 
 use std::collections::BTreeMap;
@@ -51,6 +52,44 @@ enum Command {
     PgStatActivity(PgStatActivityArgs),
     /// Alarm 13 — Checkpoint storm classifier (#46).
     CheckpointStorm(CheckpointStormArgs),
+    /// Alarm 05 — Connection storm (polling half; eBPF deferred) (#44).
+    ConnectionStorm(ConnectionStormArgs),
+}
+
+#[derive(Parser, Debug)]
+struct ConnectionStormArgs {
+    /// Postgres libpq connection string.
+    #[arg(
+        long,
+        default_value = "postgres://pgsleuth_agent:pgsleuth@localhost:5432/postgres"
+    )]
+    pg_conn: String,
+
+    /// Poll interval in milliseconds.
+    #[arg(long, default_value_t = 2_000)]
+    interval_ms: u64,
+
+    /// Fire if the live client-backend count exceeds this.
+    #[arg(long, default_value_t = 100)]
+    backend_threshold: u64,
+
+    /// Sessions whose open transaction is older than this count toward
+    /// `long_running_xacts` (passed through to the underlying
+    /// `pg_stat_activity` query).
+    #[arg(long, default_value_t = 60)]
+    long_xact_threshold_seconds: u64,
+
+    /// Emit a Finding after this many consecutive breaching intervals.
+    #[arg(long, default_value_t = 3)]
+    fire_after: u32,
+
+    /// `OTLP`/gRPC endpoint for the Finding log emitter.
+    #[arg(long, default_value = "")]
+    otlp_endpoint: String,
+
+    /// Identifier of the Postgres instance, written into the Finding.
+    #[arg(long, default_value = "fixture-pg")]
+    pg_instance: String,
 }
 
 #[derive(Parser, Debug)]
@@ -181,7 +220,42 @@ async fn main() -> Result<()> {
             .await
         }
         Some(Command::CheckpointStorm(args)) => run_checkpoint_storm(args).await,
+        Some(Command::ConnectionStorm(args)) => run_connection_storm(args).await,
     }
+}
+
+async fn run_connection_storm(args: ConnectionStormArgs) -> Result<()> {
+    let emitter = if args.otlp_endpoint.is_empty() {
+        tracing::info!("--otlp-endpoint empty; OTel emission disabled");
+        None
+    } else {
+        let cfg = EmitterConfig {
+            otlp_endpoint: args.otlp_endpoint.clone(),
+            service_name: "pgsleuth-agent".to_string(),
+            resource_attributes: BTreeMap::new(),
+        };
+        match Emitter::try_new(&cfg) {
+            Ok(e) => Some(e),
+            Err(e) => {
+                tracing::warn!(error = %e, "OTel Emitter init failed; continuing without it");
+                None
+            }
+        }
+    };
+    let result = connection_storm::run(
+        &args.pg_conn,
+        args.interval_ms,
+        args.backend_threshold,
+        args.long_xact_threshold_seconds,
+        args.fire_after,
+        &args.pg_instance,
+        emitter.as_ref(),
+    )
+    .await;
+    if let Some(e) = emitter {
+        e.shutdown();
+    }
+    result
 }
 
 async fn run_checkpoint_storm(args: CheckpointStormArgs) -> Result<()> {
