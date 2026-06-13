@@ -8,6 +8,15 @@ and OTel for everything else. 19 PRs, six catalog alarms, one focused
 session. The thing I want to write down is how the planning shaped
 the speed.
 
+The six alarms, one line each:
+
+- **Fsync Jitter** — pair `block:block_rq_issue` + `block:block_rq_complete` to bucket per-IO latency on the WAL device and fire when P50 exceeds threshold for N consecutive intervals.
+- **Checkpoint Storm (classified)** — diff `pg_stat_checkpointer` + `pg_stat_wal` per interval, classify each into write-phase / sync-phase / forced / FPW-flood, fire only on dominant-pattern recurrence with the catalog-recommended knob in the payload.
+- **Connection Storm** — poll `pg_stat_activity` client-backend count, fire when it exceeds threshold for N consecutive intervals (eBPF churn correlation deferred).
+- **Cgroup CPU Throttling** — poll cgroup-v2 `cpu.stat`, compute `throttled_usec` delta per interval, fire when throttle time exceeds the configured ms-per-second threshold sustained.
+- **Temp-File Spill — Capacity (SRE)** — walk `$PGDATA/base/pgsql_tmp/` + `statvfs()` the mount, fire when aggregate footprint > threshold OR free space < threshold.
+- **Temp-File Spill — Per-Query Attribution (eBPF)** — tracepoints on `sys_enter_openat` / `unlinkat` detect any `pgsql_tmp/` open from the postmaster's PID tree and emit a Finding once per unique (pid, path).
+
 **Planning matters to improve speed of execution.** Concretely:
 
 - **The alarm catalog** — [`docs/research/Database Observability Alarms.md`](https://github.com/TarqWork/pgsleuth/blob/main/docs/research/Database%20Observability%20Alarms.md)
