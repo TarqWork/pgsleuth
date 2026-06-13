@@ -38,10 +38,18 @@ services:
       # the container so aya can attach kernel tracepoints
       # (block:block_rq_issue, etc.). Requires SYS_ADMIN, which we
       # already have for bpffs.
+    # Tightened capability set per #40. Minimum that works on kernel
+    # ≥ 5.8 for the six Tier-1 alarms shipped in v0:
+    #   CAP_BPF      — load eBPF programs + create maps
+    #   CAP_PERFMON  — attach kprobes / tracepoints (perf_event_open)
+    #   CAP_SYS_ADMIN — mount tracefs at /sys/kernel/tracing; bpffs ops
+    # CAP_NET_ADMIN is intentionally absent. It is required for the
+    # network-side eBPF programs (sched:sched_switch, inet_csk_accept)
+    # the rule engine will eventually wire for the eBPF half of #44;
+    # add it back at that point.
     cap_add:
       - BPF
       - PERFMON
-      - NET_ADMIN
       - SYS_ADMIN
     environment:
       POSTGRES_PASSWORD: postgres
