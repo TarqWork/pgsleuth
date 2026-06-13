@@ -13,6 +13,7 @@
 //!   as deltas since the last poll.
 //! * `pgsleuth version` — prints version + build info.
 
+mod cgroup_throttle;
 mod checkpoint_storm;
 mod collect_pg_activity;
 mod collect_pg_stmt;
@@ -54,6 +55,38 @@ enum Command {
     CheckpointStorm(CheckpointStormArgs),
     /// Alarm 05 — Connection storm (polling half; eBPF deferred) (#44).
     ConnectionStorm(ConnectionStormArgs),
+    /// Alarm 14 — Cgroup CPU throttling (cpu.stat polling; kprobe deferred) (#48).
+    CgroupThrottle(CgroupThrottleArgs),
+}
+
+#[derive(Parser, Debug)]
+struct CgroupThrottleArgs {
+    /// Path to the cgroup-v2 `cpu.stat` for the Postgres process. Inside
+    /// a container/pod, `/sys/fs/cgroup/cpu.stat` is namespaced to the
+    /// container's own cgroup and is the right value here.
+    #[arg(long, default_value = "/sys/fs/cgroup/cpu.stat")]
+    cpu_stat: PathBuf,
+
+    /// Poll interval in milliseconds.
+    #[arg(long, default_value_t = 1_000)]
+    interval_ms: u64,
+
+    /// Fire if throttled time exceeds this many milliseconds per
+    /// second of wall-clock sustained.
+    #[arg(long, default_value_t = 50)]
+    throttled_ms_per_sec_threshold: u64,
+
+    /// Emit a Finding after this many consecutive breaching intervals.
+    #[arg(long, default_value_t = 3)]
+    fire_after: u32,
+
+    /// `OTLP`/gRPC endpoint for the Finding log emitter.
+    #[arg(long, default_value = "")]
+    otlp_endpoint: String,
+
+    /// Identifier of the Postgres instance, written into the Finding.
+    #[arg(long, default_value = "fixture-pg")]
+    pg_instance: String,
 }
 
 #[derive(Parser, Debug)]
@@ -221,7 +254,41 @@ async fn main() -> Result<()> {
         }
         Some(Command::CheckpointStorm(args)) => run_checkpoint_storm(args).await,
         Some(Command::ConnectionStorm(args)) => run_connection_storm(args).await,
+        Some(Command::CgroupThrottle(args)) => run_cgroup_throttle(args).await,
     }
+}
+
+async fn run_cgroup_throttle(args: CgroupThrottleArgs) -> Result<()> {
+    let emitter = if args.otlp_endpoint.is_empty() {
+        tracing::info!("--otlp-endpoint empty; OTel emission disabled");
+        None
+    } else {
+        let cfg = EmitterConfig {
+            otlp_endpoint: args.otlp_endpoint.clone(),
+            service_name: "pgsleuth-agent".to_string(),
+            resource_attributes: BTreeMap::new(),
+        };
+        match Emitter::try_new(&cfg) {
+            Ok(e) => Some(e),
+            Err(e) => {
+                tracing::warn!(error = %e, "OTel Emitter init failed; continuing without it");
+                None
+            }
+        }
+    };
+    let result = cgroup_throttle::run(
+        args.cpu_stat,
+        args.interval_ms,
+        args.throttled_ms_per_sec_threshold,
+        args.fire_after,
+        &args.pg_instance,
+        emitter.as_ref(),
+    )
+    .await;
+    if let Some(e) = emitter {
+        e.shutdown();
+    }
+    result
 }
 
 async fn run_connection_storm(args: ConnectionStormArgs) -> Result<()> {
